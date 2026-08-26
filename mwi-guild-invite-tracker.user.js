@@ -2,7 +2,7 @@
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
 // @namespace    https://github.com/layu/mwi-guild-invite-tracker
-// @version      0.3.2
+// @version      0.3.3
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
 // @description:en Passively records leaderboard profile views, guild status, and native guild invite outcomes
 // @match        https://www.milkywayidle.com/*
@@ -21,7 +21,7 @@
 
   app.config = Object.freeze({
     appId: "mwi-guild-invite-tracker",
-    version: "0.3.2",
+    version: "0.3.3",
     schemaVersion: 1,
     databaseName: "mwi-guild-invite-tracker",
     databaseVersion: 1,
@@ -2410,6 +2410,22 @@
     .mwi-git-guild-marker[data-state="inviting"] { color: #efbf4d; }
     .mwi-git-guild-marker[data-state="unchecked"] { color: #818b9d; }
     .mwi-git-guild-marker[data-state="unchecked"]::after { opacity: .38; }
+    .mwi-git-marker-host--leaderboard { white-space: nowrap; }
+    .mwi-git-invite-age-cell {
+      position: relative !important;
+      padding-inline-end: 4.75em !important;
+    }
+    .mwi-git-invite-age {
+      position: absolute;
+      inset-inline-end: .75em;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--mwi-git-warning);
+      font: 700 .82em/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      cursor: help;
+    }
     .mwi-git-dialog-backdrop { position: fixed; inset: 0; z-index: 2147483010; display: grid; place-items: center; padding: 18px; background: rgba(5,9,15,.76); }
     .mwi-git-dialog { width: min(520px, 100%); max-height: 85vh; overflow: auto; padding: 20px; border: 1px solid var(--mwi-git-metal); border-radius: 9px; color: var(--mwi-git-text); background: var(--mwi-git-panel); box-shadow: 0 24px 70px var(--mwi-git-shadow); }
     .mwi-git-dialog h2 { margin: 0 0 14px; font-size: 18px; }
@@ -2737,6 +2753,7 @@
   const core = app.core;
   const RANK_HEADERS = new Set(["排名", "rank"]);
   const NAME_HEADERS = new Set(["名称", "name"]);
+  const CHARACTER_NAME_SELECTOR = '[class*="CharacterName_characterName__"]';
 
   function latestByPlayer(events, dateField) {
     const map = new Map();
@@ -2853,6 +2870,10 @@
     return Math.round(Math.max(16, Math.min(36, inferred)));
   }
 
+  function markerHostForCell(cell) {
+    return cell?.querySelector?.(CHARACTER_NAME_SELECTOR) || cell;
+  }
+
   function removeLegacyRails() {
     for (const rail of Array.from(root.document.querySelectorAll(".mwi-git-leaderboard-rail"))) {
       rail.parentElement?.classList?.remove("mwi-git-leaderboard-host");
@@ -2862,13 +2883,14 @@
 
   function updateMarkers(rows, maps, identity, i18n, used) {
     rows.forEach(({ cell, name }) => {
+      const host = markerHostForCell(cell);
       const normalizedName = core.normalizeName(name);
       const player = maps.byName.get(normalizedName) || null;
       const observation = player ? maps.observations.get(player.playerKey) : null;
       const invite = player ? maps.invites.get(player.playerKey) : null;
       const state = guildMarkerState(player, invite, identity);
       const title = titleFor(player, observation, invite, identity, i18n);
-      let marker = Array.from(cell.children || []).find((node) => node.classList?.contains("mwi-git-guild-marker"));
+      let marker = cell.querySelector?.('.mwi-git-guild-marker[data-location="leaderboard"]') || null;
       if (!marker) marker = app.dom.element("span", {
         className: "mwi-git-guild-marker",
         attributes: { role: "img" }
@@ -2877,14 +2899,16 @@
       marker.dataset.state = state;
       marker.title = title;
       marker.setAttribute("aria-label", `${name}: ${title.replace(/\n/g, ", ")}`);
-      marker.style.setProperty("--mwi-git-marker-size", `${markerSizeForCell(cell)}px`);
-      if (cell.firstChild !== marker) cell.prepend(marker);
+      marker.style.setProperty("--mwi-git-marker-size", `${markerSizeForCell(host)}px`);
+      host.classList?.add("mwi-git-marker-host--leaderboard");
+      if (host.firstChild !== marker) host.prepend(marker);
       used.add(marker);
     });
   }
 
   function clearMarkers() {
     for (const marker of Array.from(root.document.querySelectorAll('.mwi-git-guild-marker[data-location="leaderboard"]'))) {
+      marker.parentElement?.classList?.remove("mwi-git-marker-host--leaderboard");
       marker.remove();
     }
   }
@@ -2924,6 +2948,7 @@
     guildMarkerState,
     titleFor,
     markerSizeForCell,
+    markerHostForCell,
     decorate,
     clear
   });
@@ -3010,6 +3035,124 @@
     CHARACTER_NAME_SELECTOR,
     leafTextCandidates,
     chatCharacterName,
+    decorate,
+    clear
+  });
+})(globalThis);
+
+// ---- src/ui/guild-roster-decorations.js ----
+(function initGuildRosterDecorations(root) {
+  "use strict";
+
+  const app = (root.MWIGuildInviteTracker = root.MWIGuildInviteTracker || {});
+  const core = app.core;
+  const MEMBER_HEADER = /^(成员|members?)(?:\s|\(|（|$)/i;
+  const INVITED_LABELS = new Set(["已邀请", "invited"]);
+  const CHARACTER_NAME_SELECTOR = '[class*="CharacterName_characterName__"]';
+
+  function normalizedText(node) {
+    return String(node?.innerText || node?.textContent || "").trim();
+  }
+
+  function isGuildRosterTable(table) {
+    const cells = Array.from(table?.tHead?.rows?.[0]?.cells || []);
+    return cells.length >= 2 && MEMBER_HEADER.test(normalizedText(cells[0]));
+  }
+
+  function isInvitedRow(row) {
+    return Array.from(row?.cells || [])
+      .slice(1)
+      .some((cell) => INVITED_LABELS.has(normalizedText(cell).toLowerCase()));
+  }
+
+  function leafTextCandidates(node) {
+    const descendants = Array.from(node?.querySelectorAll?.("*") || []);
+    const leaves = descendants.filter((child) =>
+      !child.classList?.contains("mwi-git-invite-age") && !(child.children?.length > 0)
+    );
+    return [node, ...leaves]
+      .map(normalizedText)
+      .filter((text) => text && text.length <= 64 && /[\p{L}\p{N}]/u.test(text) && !/^\d+$/.test(text));
+  }
+
+  function playerForCell(cell, maps) {
+    const characterNode = cell?.querySelector?.(CHARACTER_NAME_SELECTOR);
+    const candidates = leafTextCandidates(characterNode || cell);
+    for (const candidate of candidates) {
+      const player = maps.byName.get(core.normalizeName(candidate));
+      if (player) return player;
+    }
+    const possible = Array.from(maps.byName.entries())
+      .sort(([left], [right]) => right.length - left.length);
+    for (const [normalizedName, player] of possible) {
+      if (candidates.some((candidate) => core.normalizeName(candidate).includes(normalizedName))) return player;
+    }
+    return null;
+  }
+
+  function inviteStartedAt(invite) {
+    for (const value of [invite?.attemptedAt, invite?.detectedAt, invite?.confirmedAt]) {
+      if (value && Number.isFinite(Date.parse(value))) return value;
+    }
+    return null;
+  }
+
+  function formatElapsedHours(value, now = Date.now()) {
+    const startedAt = Date.parse(value || "");
+    if (!Number.isFinite(startedAt) || !Number.isFinite(now) || now < startedAt) return "";
+    const hours = (now - startedAt) / 3_600_000;
+    if (hours < 1) return `${(Math.floor(hours * 10) / 10).toFixed(1)}h`;
+    return `${Math.floor(hours)}h`;
+  }
+
+  function clear() {
+    for (const label of Array.from(root.document.querySelectorAll(".mwi-git-invite-age"))) {
+      label.parentElement?.classList?.remove("mwi-git-invite-age-cell");
+      label.remove();
+    }
+  }
+
+  function decorate(data, i18n, now = Date.now()) {
+    const maps = app.leaderboardDecorations.summaryMaps(data);
+    const used = new Set();
+    for (const table of Array.from(root.document.querySelectorAll("table"))) {
+      if (!isGuildRosterTable(table)) continue;
+      for (const body of Array.from(table.tBodies || [])) {
+        for (const row of Array.from(body.rows || [])) {
+          if (!row.cells?.length || !isInvitedRow(row)) continue;
+          const cell = row.cells[0];
+          const player = playerForCell(cell, maps);
+          const invite = player ? maps.invites.get(player.playerKey) : null;
+          const startedAt = inviteStartedAt(invite);
+          const elapsed = formatElapsedHours(startedAt, now);
+          if (!elapsed) continue;
+          let label = cell.querySelector?.(".mwi-git-invite-age") || null;
+          if (!label) label = app.dom.element("time", { className: "mwi-git-invite-age" });
+          label.textContent = elapsed;
+          label.dateTime = startedAt;
+          label.title = `${i18n.t("inviteAttempt")} ${app.dom.formatDate(startedAt, i18n.language)}`;
+          label.setAttribute("aria-label", label.title);
+          cell.classList?.add("mwi-git-invite-age-cell");
+          if (label.parentElement !== cell) cell.append(label);
+          used.add(label);
+        }
+      }
+    }
+    for (const label of Array.from(root.document.querySelectorAll(".mwi-git-invite-age"))) {
+      if (used.has(label)) continue;
+      label.parentElement?.classList?.remove("mwi-git-invite-age-cell");
+      label.remove();
+    }
+  }
+
+  app.guildRosterDecorations = Object.freeze({
+    normalizedText,
+    isGuildRosterTable,
+    isInvitedRow,
+    leafTextCandidates,
+    playerForCell,
+    inviteStartedAt,
+    formatElapsedHours,
     decorate,
     clear
   });
@@ -3573,6 +3716,7 @@
   const decorationScheduler = app.scheduler.frameScheduler(() => {
     app.leaderboardDecorations.decorate(currentData, i18n, identity, displayPreferences.leaderboard);
     app.chatDecorations.decorate(currentData, i18n, identity, displayPreferences.chat);
+    app.guildRosterDecorations.decorate(currentData, i18n);
   });
 
   async function refresh() {
@@ -3785,6 +3929,7 @@
       .catch((error) => console.error("[MWI Guild Invite Tracker] Failed to expire pending events", error));
   }, 1000);
   const languageTimer = root.setInterval(syncGameLanguage, 1000);
+  const relativeTimeTimer = root.setInterval(() => decorationScheduler.request(), 60_000);
 
   app.runtime = Object.freeze({
     controller,
@@ -3795,11 +3940,13 @@
     async destroy() {
       root.clearInterval(expiryTimer);
       root.clearInterval(languageTimer);
+      root.clearInterval(relativeTimeTimer);
       root.removeEventListener(app.config.bridgeEvent, handleBridge);
       observer?.disconnect();
       decorationScheduler.destroy();
       app.leaderboardDecorations.clear();
       app.chatDecorations.clear();
+      app.guildRosterDecorations.clear();
       sidebar?.destroy();
       panel?.destroy();
       await repository.close();
