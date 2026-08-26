@@ -2,7 +2,7 @@
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
 // @namespace    https://github.com/layu/mwi-guild-invite-tracker
-// @version      0.3.0
+// @version      0.3.1
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
 // @description:en Passively records leaderboard profile views, guild status, and native guild invite outcomes
 // @match        https://www.milkywayidle.com/*
@@ -21,7 +21,7 @@
 
   app.config = Object.freeze({
     appId: "mwi-guild-invite-tracker",
-    version: "0.3.0",
+    version: "0.3.1",
     schemaVersion: 1,
     databaseName: "mwi-guild-invite-tracker",
     databaseVersion: 1,
@@ -210,6 +210,30 @@
     };
   }
 
+  function playerFromGuildMember(character, guild, observedAt) {
+    const currentName = safeString(character && character.name).trim();
+    const characterId = nullableNumber(character && character.characterId);
+    return {
+      playerKey: playerKey(characterId, currentName),
+      characterId,
+      currentName,
+      normalizedName: normalizeName(currentName),
+      nameAliases: [],
+      firstSeenAt: observedAt,
+      lastSeenAt: observedAt,
+      latestGuild: {
+        state: "joined",
+        guildId: nullableNumber(guild && guild.guildId),
+        guildName: safeString(guild && guild.guildName).trim() || null,
+        guildRole: safeString(character && character.role).trim() || null,
+        observedAt,
+        certainty: "guild_roster"
+      },
+      lastViewedAt: null,
+      lastInvitedAt: null
+    };
+  }
+
   function makeObservation(profile, context, viewedAt, randomUUID) {
     const player = playerFromProfile(profile, viewedAt);
     return {
@@ -357,6 +381,7 @@
     laterIso,
     playerFromProfile,
     playerFromInvite,
+    playerFromGuildMember,
     makeObservation,
     makeInviteEvent,
     applyInviteOutcome,
@@ -377,7 +402,7 @@
   const messages = {
     zh: {
       launcher: "招募档案",
-      sidebar: "邀请助手",
+      sidebar: "邀请",
       title: "招募档案",
       subtitle: "排行榜查看与公会邀请记录",
       close: "关闭",
@@ -409,6 +434,10 @@
       importJson: "导入备份",
       clear: "清空当前角色",
       deletePlayer: "删除该玩家记录",
+      filtersSection: "筛选",
+      dataSection: "数据操作",
+      expandSection: "展开",
+      collapseSection: "折叠",
       players: "候选人",
       observations: "查看记录",
       invites: "邀请记录",
@@ -529,9 +558,95 @@
     }
   };
 
+  const leaderboardCategoryNames = Object.freeze({
+    zh: Object.freeze({
+      total_level: "总等级",
+      milking: "挤奶",
+      foraging: "采集",
+      woodcutting: "伐木",
+      cheesesmithing: "奶酪制作",
+      crafting: "制作",
+      tailoring: "缝纫",
+      cooking: "烹饪",
+      brewing: "酿造",
+      alchemy: "炼金",
+      enhancing: "强化",
+      stamina: "耐力",
+      intelligence: "智力",
+      attack: "攻击",
+      defense: "防御",
+      melee: "近战",
+      ranged: "远程",
+      magic: "魔法",
+      task_points: "任务点数",
+      labyrinth_points: "迷宫点数",
+      labyrinth_depth: "迷宫深度",
+      collection_points: "收藏点数",
+      bestiary_points: "图鉴点数",
+      fame_points: "声望点数",
+      guild: "公会等级",
+      guild_buildings: "公会建筑",
+      guild_shrines: "公会神殿",
+      guild_points: "公会点数",
+      guild_weekly_points: "公会每周点数",
+      guild_weekly_trial: "公会每周试炼"
+    }),
+    en: Object.freeze({
+      total_level: "Total Level",
+      milking: "Milking",
+      foraging: "Foraging",
+      woodcutting: "Woodcutting",
+      cheesesmithing: "Cheesesmithing",
+      crafting: "Crafting",
+      tailoring: "Tailoring",
+      cooking: "Cooking",
+      brewing: "Brewing",
+      alchemy: "Alchemy",
+      enhancing: "Enhancing",
+      stamina: "Stamina",
+      intelligence: "Intelligence",
+      attack: "Attack",
+      defense: "Defense",
+      melee: "Melee",
+      ranged: "Ranged",
+      magic: "Magic",
+      task_points: "Task Points",
+      labyrinth_points: "Labyrinth Points",
+      labyrinth_depth: "Labyrinth Depth",
+      collection_points: "Collection Points",
+      bestiary_points: "Bestiary Points",
+      fame_points: "Fame Points",
+      guild: "Level",
+      guild_buildings: "Buildings",
+      guild_shrines: "Shrines",
+      guild_points: "Guild Points",
+      guild_weekly_points: "Weekly Points",
+      guild_weekly_trial: "Weekly Trials"
+    })
+  });
+
+  function normalizedLanguage(value) {
+    return String(value || "").toLowerCase().startsWith("zh") ? "zh" : "en";
+  }
+
   function detectLanguage() {
-    const value = (root.document && root.document.documentElement.lang) || "";
-    return value.toLowerCase().startsWith("zh") ? "zh" : "en";
+    try {
+      const stored = root.localStorage?.getItem("i18nextLng");
+      if (stored) return normalizedLanguage(stored);
+    } catch (_error) {
+      // The visible game language is used when localStorage is unavailable.
+    }
+    const tabLabels = Array.from(root.document?.querySelectorAll?.('[role="tab"]') || [])
+      .map((tab) => String(tab.innerText || tab.textContent || "").trim());
+    const sidebarLanguage = app.sidebarIntegration?.sidebarLocale?.(tabLabels);
+    if (sidebarLanguage) return sidebarLanguage;
+    return normalizedLanguage(root.document?.documentElement?.lang || root.navigator?.language);
+  }
+
+  function categoryName(hrid, language) {
+    const key = String(hrid || "").trim();
+    if (!key) return "?";
+    return leaderboardCategoryNames[normalizedLanguage(language)][key] || key;
   }
 
   function createI18n(initialLanguage) {
@@ -541,15 +656,25 @@
         return language;
       },
       setLanguage(next) {
-        language = next === "zh" ? "zh" : "en";
+        language = normalizedLanguage(next);
       },
       t(key) {
-        return messages[language][key] || messages.en[key] || key;
+        return messages[language][key] || messages.zh[key] || messages.en[key] || key;
+      },
+      category(hrid) {
+        return categoryName(hrid, language);
       }
     };
   }
 
-  app.localization = Object.freeze({ messages, detectLanguage, createI18n });
+  app.localization = Object.freeze({
+    messages,
+    leaderboardCategoryNames,
+    normalizedLanguage,
+    detectLanguage,
+    categoryName,
+    createI18n
+  });
 })(globalThis);
 
 // ---- src/bridge.js ----
@@ -710,7 +835,8 @@
             name: character.name ?? characterData.characterName ?? "",
             guildId: guild.id ?? characterData.guildId ?? null,
             guildName: guild.name ?? characterData.guildName ?? null
-          }
+          },
+          characters: sanitizeGuildCharacters(characterData)
         };
       }
       return { type };
@@ -912,7 +1038,8 @@
           characterName: name,
           guildId: core.nullableNumber(character.guildId),
           guildName: typeof character.guildName === "string" ? character.guildName : null
-        }
+        },
+        guildCharacters: Array.isArray(message.characters) ? message.characters : []
       };
     }
     return null;
@@ -994,7 +1121,19 @@
       prune(Date.parse(event.at || 0) || Date.now());
       if (event.kind === "identity") {
         identity = event.identity;
-        return [{ type: "identity", identity }];
+        const actions = [{ type: "identity", identity }];
+        const joined = (event.guildCharacters || []).filter(
+          (character) => character?.status === "joined" && character.name
+        );
+        if (joined.length) {
+          actions.push({
+            type: "sync_guild_members",
+            characters: joined,
+            observedAt: event.at,
+            identity
+          });
+        }
+        return actions;
       }
       if (event.kind === "leaderboard_snapshot") {
         leaderboard = event.leaderboard;
@@ -1055,6 +1194,17 @@
         if (identity) {
           identity = { ...identity, guildId: event.guildId ?? identity.guildId, guildName: event.guildName ?? identity.guildName };
           actions.push({ type: "identity", identity });
+        }
+        const joined = event.characters.filter(
+          (character) => character?.status === "joined" && character.name
+        );
+        if (joined.length) {
+          actions.push({
+            type: "sync_guild_members",
+            characters: joined,
+            observedAt: event.at,
+            identity
+          });
         }
         for (const character of event.characters) {
           if (character.status !== "invited" || !character.name) continue;
@@ -1267,6 +1417,32 @@
       }
     }
 
+    async function upsertPlayers(namespace, players) {
+      const db = await database();
+      const tx = db.transaction(["players", "profileObservations", "inviteEvents"], "readwrite");
+      const done = transactionPromise(tx);
+      const mergedPlayers = [];
+      try {
+        for (const player of players || []) {
+          if (!player?.normalizedName) continue;
+          const existing = await findPlayer(tx, namespace, player);
+          const merged = core.mergePlayer(existing && publicRecord(existing), player);
+          if (existing && existing.playerKey !== merged.playerKey) {
+            await rewritePlayerKey(tx, namespace, existing.playerKey, merged.playerKey);
+            tx.objectStore("players").delete(existing.pk);
+          }
+          tx.objectStore("players").put(dbRecord(namespace, "players", merged));
+          mergedPlayers.push(merged);
+        }
+        await done;
+        return mergedPlayers;
+      } catch (error) {
+        tx.abort();
+        await done.catch(() => {});
+        throw error;
+      }
+    }
+
     async function updateInvite(namespace, invite) {
       const db = await database();
       const tx = db.transaction("inviteEvents", "readwrite");
@@ -1343,6 +1519,7 @@
       namespaceFor,
       recordObservation,
       recordInvite,
+      upsertPlayers,
       updateInvite,
       snapshot,
       replaceSnapshot,
@@ -1396,6 +1573,29 @@
       data.inviteEvents.push(core.structuredCloneSafe(invite));
       return { player: merged, invite };
     }
+    async function upsertPlayers(namespace, players) {
+      const data = get(namespace);
+      const mergedPlayers = [];
+      for (const player of players || []) {
+        if (!player?.normalizedName) continue;
+        const index = data.players.findIndex(
+          (item) =>
+            (player.characterId != null && item.characterId === player.characterId) ||
+            item.normalizedName === player.normalizedName
+        );
+        const existing = index >= 0 ? data.players[index] : null;
+        const merged = core.mergePlayer(existing, player);
+        if (existing && existing.playerKey !== merged.playerKey) {
+          for (const event of [...data.profileObservations, ...data.inviteEvents]) {
+            if (event.playerKey === existing.playerKey) event.playerKey = merged.playerKey;
+          }
+        }
+        if (index >= 0) data.players[index] = merged;
+        else data.players.push(merged);
+        mergedPlayers.push(core.structuredCloneSafe(merged));
+      }
+      return mergedPlayers;
+    }
     async function updateInvite(namespace, invite) {
       const data = get(namespace);
       const index = data.inviteEvents.findIndex((event) => event.id === invite.id);
@@ -1418,6 +1618,7 @@
       replaceSnapshot,
       recordObservation,
       recordInvite,
+      upsertPlayers,
       updateInvite,
       deletePlayer,
       clearNamespace,
@@ -1995,6 +2196,40 @@
     .mwi-git-button { min-height: 34px; padding: 0 11px; }
     .mwi-git-button:hover, .mwi-git-icon-button:hover { border-color: var(--mwi-git-scan); }
     .mwi-git-button--danger { color: #ffd7d2; border-color: rgba(228,111,97,.55); }
+    .mwi-git-collapsible { min-width: 0; background: var(--mwi-git-panel); }
+    .mwi-git-section-toggle {
+      box-sizing: border-box;
+      width: 100%;
+      min-height: 30px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 7px 14px;
+      border: 0;
+      border-bottom: 1px solid rgba(52,70,91,.7);
+      color: var(--mwi-git-muted);
+      background: rgba(13,20,32,.96);
+      font: 700 10px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: .1em;
+      text-align: left;
+      cursor: pointer;
+    }
+    .mwi-git-section-toggle:hover { color: var(--mwi-git-text); background: rgba(27,40,57,.96); }
+    .mwi-git-section-chevron {
+      flex: 0 0 auto;
+      width: 7px;
+      height: 7px;
+      margin-top: -3px;
+      border-right: 1.5px solid currentColor;
+      border-bottom: 1.5px solid currentColor;
+      transform: rotate(45deg);
+      transition: transform 140ms ease;
+    }
+    [data-collapsed="true"] > .mwi-git-section-toggle .mwi-git-section-chevron { margin-top: 2px; transform: rotate(-45deg); }
+    .mwi-git-collapsible > [hidden],
+    .mwi-git-list-pane > [hidden],
+    .mwi-git-detail-pane > [hidden] { display: none !important; }
     .mwi-git-toolbar {
       display: grid;
       grid-template-columns: minmax(180px, 1.35fr) repeat(3, minmax(120px, .8fr));
@@ -2019,7 +2254,12 @@
     .mwi-git-body { min-height: 0; display: grid; grid-template-columns: minmax(280px, 39%) 1fr; }
     .mwi-git-list-pane, .mwi-git-detail-pane { min-height: 0; overflow: auto; }
     .mwi-git-list-pane { border-right: 1px solid var(--mwi-git-metal); background: rgba(21,31,46,.75); }
-    .mwi-git-pane-label { position: sticky; top: 0; z-index: 1; margin: 0; padding: 10px 14px; color: var(--mwi-git-muted); background: rgba(13,20,32,.96); border-bottom: 1px solid rgba(52,70,91,.7); font: 700 10px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .12em; text-transform: uppercase; }
+    .mwi-git-list-pane > .mwi-git-section-toggle,
+    .mwi-git-detail-pane > .mwi-git-section-toggle { position: sticky; top: 0; z-index: 2; }
+    .mwi-git-detail-content { min-height: 0; }
+    .mwi-git-body[data-players-collapsed="true"] { grid-template-columns: minmax(120px, 20%) 1fr; }
+    .mwi-git-body[data-timeline-collapsed="true"] { grid-template-columns: 1fr minmax(120px, 20%); }
+    .mwi-git-body[data-players-collapsed="true"][data-timeline-collapsed="true"] { grid-template-columns: 1fr 1fr; }
     .mwi-git-player {
       width: 100%;
       display: grid;
@@ -2095,6 +2335,28 @@
     .mwi-git-guild-marker[data-state="inviting"] { color: #efbf4d; }
     .mwi-git-guild-marker[data-state="unchecked"] { color: #818b9d; }
     .mwi-git-guild-marker[data-state="unchecked"]::after { opacity: .38; }
+    .mwi-git-own-guild-badge {
+      position: relative;
+      display: inline-block;
+      box-sizing: border-box;
+      width: 12px;
+      height: 12px;
+      margin-inline-start: 5px;
+      border: 2px solid #aa83f2;
+      border-radius: 50%;
+      color: #aa83f2;
+      background: #101722;
+      box-shadow: 0 2px 6px rgba(0,0,0,.36);
+      vertical-align: -1px;
+      cursor: help;
+    }
+    .mwi-git-own-guild-badge::after {
+      content: "";
+      position: absolute;
+      inset: 2px;
+      border-radius: 50%;
+      background: currentColor;
+    }
     .mwi-git-dialog-backdrop { position: fixed; inset: 0; z-index: 2147483010; display: grid; place-items: center; padding: 18px; background: rgba(5,9,15,.76); }
     .mwi-git-dialog { width: min(520px, 100%); max-height: 85vh; overflow: auto; padding: 20px; border: 1px solid var(--mwi-git-metal); border-radius: 9px; color: var(--mwi-git-text); background: var(--mwi-git-panel); box-shadow: 0 24px 70px var(--mwi-git-shadow); }
     .mwi-git-dialog h2 { margin: 0 0 14px; font-size: 18px; }
@@ -2116,12 +2378,16 @@
     .mwi-git-panel--native .mwi-git-input,
     .mwi-git-panel--native .mwi-git-select { height: 32px; padding-inline: 8px; font-size: 11px; }
     .mwi-git-panel--native .mwi-git-actions { gap: 6px; padding: 8px 10px; }
+    .mwi-git-panel--native .mwi-git-section-toggle { min-height: 28px; padding: 6px 10px; }
     .mwi-git-panel--native .mwi-git-button { min-height: 32px; padding-inline: 8px; font-size: 10px; }
     .mwi-git-panel--native .mwi-git-summary { width: 100%; margin: 2px 0 0; }
     .mwi-git-panel--native .mwi-git-body {
       grid-template-columns: 1fr;
       grid-template-rows: minmax(190px, 42%) minmax(0, 1fr);
     }
+    .mwi-git-panel--native .mwi-git-body[data-players-collapsed="true"] { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+    .mwi-git-panel--native .mwi-git-body[data-timeline-collapsed="true"] { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; }
+    .mwi-git-panel--native .mwi-git-body[data-players-collapsed="true"][data-timeline-collapsed="true"] { grid-template-rows: auto auto; }
     .mwi-git-panel--native .mwi-git-list-pane { border-right: 0; border-bottom: 1px solid var(--mwi-git-metal); }
     .mwi-git-panel--native .mwi-git-player { padding: 10px; }
     .mwi-git-panel--native .mwi-git-detail-head { padding: 12px 10px; }
@@ -2142,6 +2408,9 @@
       .mwi-git-panel:not(.mwi-git-panel--native) { width: 100vw; }
       .mwi-git-toolbar { grid-template-columns: 1fr 1fr; }
       .mwi-git-body { grid-template-columns: 1fr; grid-template-rows: minmax(210px, 42%) minmax(0, 1fr); }
+      .mwi-git-body[data-players-collapsed="true"] { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+      .mwi-git-body[data-timeline-collapsed="true"] { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; }
+      .mwi-git-body[data-players-collapsed="true"][data-timeline-collapsed="true"] { grid-template-rows: auto auto; }
       .mwi-git-list-pane { border-right: 0; border-bottom: 1px solid var(--mwi-git-metal); }
       .mwi-git-summary { width: 100%; margin: 3px 0 0; }
       .mwi-git-actions { padding-inline: 12px; }
@@ -2495,7 +2764,7 @@
     ];
     if (state === "joined" && player.latestGuild?.guildName) parts.push(player.latestGuild.guildName);
     if (observation?.leaderboard) {
-      parts.push(`${observation.leaderboard.categoryHrid || "?"} · ${i18n.t("rank")} ${observation.leaderboard.rank ?? "—"}`);
+      parts.push(`${i18n.category(observation.leaderboard.categoryHrid)} · ${i18n.t("rank")} ${observation.leaderboard.rank ?? "—"}`);
     }
     if (player?.lastViewedAt) {
       parts.push(`${i18n.t("checkedAt")} ${app.dom.formatDate(player.lastViewedAt, i18n.language)}`);
@@ -2683,6 +2952,101 @@
   });
 })(globalThis);
 
+// ---- src/ui/member-decorations.js ----
+(function initMemberDecorations(root) {
+  "use strict";
+
+  const app = (root.MWIGuildInviteTracker = root.MWIGuildInviteTracker || {});
+  const core = app.core;
+
+  function ownGuildNames(data, identity) {
+    const names = new Map();
+    for (const player of data.players || []) {
+      if (!app.leaderboardDecorations.isOwnGuild(player, identity)) continue;
+      for (const name of [player.currentName, ...(player.nameAliases || [])]) {
+        const normalized = core.normalizeName(name);
+        if (normalized) names.set(normalized, player);
+      }
+    }
+    return names;
+  }
+
+  function isGuildRosterTable(table) {
+    const firstHeader = app.leaderboardDecorations.normalizedCellText(
+      table?.tHead?.rows?.[0]?.cells?.[0]
+    ).toLowerCase();
+    return /^(成员|members?)(?:\s|\(|（|$)/i.test(firstHeader);
+  }
+
+  function targetCells(table) {
+    if (app.leaderboardDecorations.isLeaderboardTable(table)) {
+      return app.leaderboardDecorations.leaderboardRows(table).map(({ row }) => row.cells[1]);
+    }
+    if (!isGuildRosterTable(table)) return [];
+    return Array.from(table.tBodies || []).flatMap((body) =>
+      Array.from(body.rows || []).map((row) => row.cells?.[0]).filter(Boolean)
+    );
+  }
+
+  function exactNameNode(cell, names) {
+    const descendants = Array.from(cell?.querySelectorAll?.("*") || []);
+    for (const node of descendants) {
+      const hasContentChildren = Array.from(node.children || []).some(
+        (child) => !child.classList?.contains("mwi-git-own-guild-badge")
+      );
+      if (hasContentChildren) continue;
+      const player = names.get(core.normalizeName(node.textContent));
+      if (player) return { node, player };
+    }
+    const player = names.get(core.normalizeName(cell?.textContent));
+    return player ? { node: cell, player } : null;
+  }
+
+  function decorate(data, i18n, identity) {
+    const names = ownGuildNames(data, identity);
+    const used = new Set();
+    for (const table of Array.from(root.document.querySelectorAll("table"))) {
+      if (table.closest?.(".mwi-git-panel")) continue;
+      for (const cell of targetCells(table)) {
+        const match = exactNameNode(cell, names);
+        if (!match) continue;
+        let badge = Array.from(match.node.children || []).find(
+          (node) => node.classList?.contains("mwi-git-own-guild-badge")
+        );
+        if (!badge) {
+          badge = app.dom.element("span", {
+            className: "mwi-git-own-guild-badge",
+            attributes: { role: "img" }
+          });
+          match.node.append(badge);
+        }
+        badge.dataset.playerKey = match.player.playerKey;
+        badge.title = i18n.t("ownGuild");
+        badge.setAttribute("aria-label", i18n.t("ownGuild"));
+        used.add(badge);
+      }
+    }
+    for (const badge of Array.from(root.document.querySelectorAll(".mwi-git-own-guild-badge"))) {
+      if (!used.has(badge)) badge.remove();
+    }
+  }
+
+  function clear() {
+    for (const badge of Array.from(root.document.querySelectorAll(".mwi-git-own-guild-badge"))) {
+      badge.remove();
+    }
+  }
+
+  app.memberDecorations = Object.freeze({
+    ownGuildNames,
+    isGuildRosterTable,
+    targetCells,
+    exactNameNode,
+    decorate,
+    clear
+  });
+})(globalThis);
+
 // ---- src/ui/import-export-dialog.js ----
 (function initImportExportDialog(root) {
   "use strict";
@@ -2816,7 +3180,7 @@
   function observationDetail(event, i18n) {
     const details = [];
     if (event.leaderboard) {
-      details.push(`${event.leaderboard.typeHrid || "?"} / ${event.leaderboard.categoryHrid || "?"}`);
+      details.push(`${event.leaderboard.typeHrid || "?"} / ${i18n.category(event.leaderboard.categoryHrid)}`);
       details.push(`${i18n.t("rank")} ${event.leaderboard.rank ?? "—"}`);
     }
     const guild = event.guildSnapshot;
@@ -2893,6 +3257,12 @@
       sort: initialView.sort || "lastViewedAt",
       direction: initialView.direction === "asc" ? "asc" : "desc"
     };
+    const collapsed = {
+      filters: Boolean(initialView.collapsed?.filters),
+      actions: Boolean(initialView.collapsed?.actions),
+      players: Boolean(initialView.collapsed?.players),
+      timeline: Boolean(initialView.collapsed?.timeline)
+    };
 
     app.styles.installStyles();
     const launcher = dom.element("button", {
@@ -2916,9 +3286,8 @@
     const subtitle = dom.element("p", { className: "mwi-git-subtitle", text: i18n.t("subtitle") });
     titleBlock.append(title, subtitle);
     const local = dom.element("span", { className: "mwi-git-local", text: i18n.t("localOnly") });
-    const language = dom.element("button", { className: "mwi-git-icon-button", text: i18n.language === "zh" ? "EN" : "中", type: "button", title: i18n.t("language") });
     const close = dom.element("button", { className: "mwi-git-icon-button", text: "×", type: "button", title: i18n.t("close"), attributes: { "aria-label": i18n.t("close") } });
-    header.append(titleBlock, local, language, close);
+    header.append(titleBlock, local, close);
 
     const toolbar = dom.element("div", { className: "mwi-git-toolbar" });
     const search = dom.element("input", { className: "mwi-git-input", type: "search", attributes: { placeholder: i18n.t("search"), "aria-label": i18n.t("search") } });
@@ -2957,14 +3326,45 @@
     const summary = dom.element("span", { className: "mwi-git-summary" });
     actions.append(exportJson, exportCsv, importJson, clear, file, summary);
 
+    const filterSection = dom.element("section", { className: "mwi-git-collapsible" });
+    const actionSection = dom.element("section", { className: "mwi-git-collapsible" });
     const body = dom.element("div", { className: "mwi-git-body" });
     const listPane = dom.element("section", { className: "mwi-git-list-pane", attributes: { "aria-label": i18n.t("players") } });
-    const listLabel = dom.element("h3", { className: "mwi-git-pane-label", text: i18n.t("players") });
     const list = dom.element("div");
-    listPane.append(listLabel, list);
     const detailPane = dom.element("section", { className: "mwi-git-detail-pane", attributes: { "aria-label": i18n.t("timeline") } });
+    const detailContent = dom.element("div", { className: "mwi-git-detail-content" });
+
+    function createSectionToggle(sectionKey, labelKey, content) {
+      const label = i18n.t(labelKey);
+      const labelNode = dom.element("span", { text: label });
+      const chevron = dom.element("span", { className: "mwi-git-section-chevron", attributes: { "aria-hidden": "true" } });
+      const toggle = dom.element("button", { className: "mwi-git-section-toggle", type: "button" });
+      toggle.append(labelNode, chevron);
+
+      function applyState() {
+        const isCollapsed = collapsed[sectionKey];
+        toggle.setAttribute("aria-expanded", String(!isCollapsed));
+        toggle.setAttribute("aria-label", `${i18n.t(isCollapsed ? "expandSection" : "collapseSection")}：${label}`);
+        content.hidden = isCollapsed;
+        toggle.parentElement.dataset.collapsed = String(isCollapsed);
+        body.dataset.playersCollapsed = String(collapsed.players);
+        body.dataset.timelineCollapsed = String(collapsed.timeline);
+      }
+
+      toggle.addEventListener("click", () => {
+        collapsed[sectionKey] = !collapsed[sectionKey];
+        applyState();
+      });
+      root.queueMicrotask(applyState);
+      return toggle;
+    }
+
+    filterSection.append(createSectionToggle("filters", "filtersSection", toolbar), toolbar);
+    actionSection.append(createSectionToggle("actions", "dataSection", actions), actions);
+    listPane.append(createSectionToggle("players", "players", list), list);
+    detailPane.append(createSectionToggle("timeline", "timeline", detailContent), detailContent);
     body.append(listPane, detailPane);
-    shell.append(header, toolbar, actions, body);
+    shell.append(header, filterSection, actionSection, body);
     panel.append(shell);
     backdrop.append(panel);
 
@@ -2982,7 +3382,7 @@
       const categories = [...new Set(data.profileObservations.map((event) => event.leaderboard?.categoryHrid).filter(Boolean))].sort();
       const previousCategory = settings.category;
       category.replaceChildren(dom.element("option", { text: i18n.t("allCategories"), attributes: { value: "all" } }));
-      for (const value of categories) category.append(dom.element("option", { text: value.replaceAll("_", " "), attributes: { value } }));
+      for (const value of categories) category.append(dom.element("option", { text: i18n.category(value), attributes: { value } }));
       settings.category = categories.includes(previousCategory) ? previousCategory : "all";
       category.value = settings.category;
       const visible = app.historyView.renderPlayerList(list, data, settings, selectedKey, i18n, (key) => {
@@ -2991,7 +3391,7 @@
       });
       if (selectedKey && !data.players.some((player) => player.playerKey === selectedKey)) selectedKey = null;
       if (!selectedKey && visible.length) selectedKey = visible[0].playerKey;
-      app.historyView.renderTimeline(detailPane, selectedPlayer(), data, i18n, async () => {
+      app.historyView.renderTimeline(detailContent, selectedPlayer(), data, i18n, async () => {
         if (!root.confirm(i18n.t("confirmDelete"))) return;
         await controller.deletePlayer(selectedKey);
         selectedKey = null;
@@ -3056,10 +3456,6 @@
       selectedKey = null;
       await controller.refresh();
     });
-    language.addEventListener("click", () => {
-      controller.setLanguage(i18n.language === "zh" ? "en" : "zh");
-    });
-
     function mount() {
       root.document.body.append(launcher, backdrop);
       render();
@@ -3110,6 +3506,7 @@
       return {
         ...settings,
         selectedKey,
+        collapsed: { ...collapsed },
         open: nativeMode ? !panel.hidden : !backdrop.hidden
       };
     }
@@ -3156,28 +3553,11 @@
   let observer = null;
   let protocolChain = Promise.resolve();
   const queuedActions = [];
-  const settings = loadSettings();
-  const i18n = app.localization.createI18n(settings.language);
+  const i18n = app.localization.createI18n();
   const decorationScheduler = app.scheduler.frameScheduler(() => {
     app.leaderboardDecorations.decorate(currentData, i18n, identity);
+    app.memberDecorations.decorate(currentData, i18n, identity);
   });
-
-  function loadSettings() {
-    try {
-      const value = JSON.parse(root.localStorage.getItem(app.config.settingsKey) || "{}");
-      return { language: value.language === "zh" || value.language === "en" ? value.language : null };
-    } catch (_error) {
-      return { language: null };
-    }
-  }
-
-  function saveSettings(next) {
-    try {
-      root.localStorage.setItem(app.config.settingsKey, JSON.stringify(next));
-    } catch (_error) {
-      // UI preferences are non-critical.
-    }
-  }
 
   async function refresh() {
     if (!namespace) {
@@ -3244,6 +3624,14 @@
       await refresh();
       return;
     }
+    if (action.type === "sync_guild_members") {
+      const players = action.characters
+        .map((character) => app.core.playerFromGuildMember(character, action.identity, action.observedAt))
+        .filter((player) => player.currentName);
+      await repository.upsertPlayers(namespace, players);
+      await refresh();
+      return;
+    }
     if (action.type === "record_invite") {
       await repository.recordInvite(namespace, action.player, action.invite);
       await refresh();
@@ -3273,6 +3661,26 @@
 
   root.addEventListener(app.config.bridgeEvent, handleBridge);
   app.bridge.inject();
+
+  function syncGameLanguage() {
+    const nextLanguage = app.localization.detectLanguage();
+    if (nextLanguage === i18n.language) return false;
+    const viewState = panel?.viewState() || {};
+    i18n.setLanguage(nextLanguage);
+    if (!panel) return true;
+    sidebar?.destroy();
+    sidebar = null;
+    panel.destroy();
+    panel = app.panelShell.createPanel(controller, i18n, viewState);
+    panel.mount();
+    panel.setIdentity(identity);
+    panel.setData(currentData);
+    sidebar = app.sidebarIntegration.createController({ panel, i18n });
+    sidebar.start();
+    if (viewState.open) sidebar.open();
+    decorationScheduler.request();
+    return true;
+  }
 
   const controller = {
     refresh,
@@ -3325,22 +3733,6 @@
     },
     async deletePlayer(key) {
       if (namespace && key) await repository.deletePlayer(namespace, key);
-    },
-    setLanguage(language) {
-      saveSettings({ ...settings, language });
-      const viewState = panel?.viewState() || {};
-      i18n.setLanguage(language);
-      sidebar?.destroy();
-      sidebar = null;
-      panel?.destroy();
-      panel = app.panelShell.createPanel(controller, i18n, viewState);
-      panel.mount();
-      panel.setIdentity(identity);
-      panel.setData(currentData);
-      sidebar = app.sidebarIntegration.createController({ panel, i18n });
-      sidebar.start();
-      if (viewState.open) sidebar.open();
-      decorationScheduler.request();
     }
   };
 
@@ -3352,7 +3744,10 @@
     panel.setData(currentData);
     sidebar = app.sidebarIntegration.createController({ panel, i18n });
     sidebar.start();
-    observer = new MutationObserver(() => decorationScheduler.request());
+    observer = new MutationObserver(() => {
+      decorationScheduler.request();
+      syncGameLanguage();
+    });
     observer.observe(root.document.body, { childList: true, subtree: true });
     decorationScheduler.request();
   }
@@ -3368,6 +3763,7 @@
       })
       .catch((error) => console.error("[MWI Guild Invite Tracker] Failed to expire pending events", error));
   }, 1000);
+  const languageTimer = root.setInterval(syncGameLanguage, 1000);
 
   app.runtime = Object.freeze({
     controller,
@@ -3377,10 +3773,12 @@
     get namespace() { return namespace; },
     async destroy() {
       root.clearInterval(expiryTimer);
+      root.clearInterval(languageTimer);
       root.removeEventListener(app.config.bridgeEvent, handleBridge);
       observer?.disconnect();
       decorationScheduler.destroy();
       app.leaderboardDecorations.clear();
+      app.memberDecorations.clear();
       sidebar?.destroy();
       panel?.destroy();
       await repository.close();
