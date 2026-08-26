@@ -2,7 +2,7 @@
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
 // @namespace    https://github.com/layu/mwi-guild-invite-tracker
-// @version      0.3.7
+// @version      0.3.8
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
 // @description:en Passively records leaderboard profile views, guild status, and native guild invite outcomes
 // @match        https://www.milkywayidle.com/*
@@ -21,7 +21,7 @@
 
   app.config = Object.freeze({
     appId: "mwi-guild-invite-tracker",
-    version: "0.3.7",
+    version: "0.3.8",
     schemaVersion: 1,
     databaseName: "mwi-guild-invite-tracker",
     databaseVersion: 1,
@@ -70,6 +70,8 @@
     "ambiguous",
     "unknown_error"
   ]);
+
+  const ACTIVITY_STATES = new Set(["work", "offline", "none"]);
 
   const ERROR_OUTCOME = Object.freeze({
     "errorNotification.characterNameNotFound": "not_found",
@@ -123,6 +125,19 @@
       observedAt,
       certainty: "profile"
     };
+  }
+
+  function activitySnapshot(profile, observedAt) {
+    const state = ACTIVITY_STATES.has(profile?.activityState) ? profile.activityState : "none";
+    return {
+      state,
+      observedAt,
+      certainty: "profile"
+    };
+  }
+
+  function activityStateForObservation(event) {
+    return ACTIVITY_STATES.has(event?.activitySnapshot?.state) ? event.activitySnapshot.state : "unrecorded";
   }
 
   function mergeAliases(existing, incoming, currentName) {
@@ -243,7 +258,8 @@
       viewedAt,
       source: context && context.leaderboard ? "leaderboard" : (context && context.source) || "unknown",
       leaderboard: context && context.leaderboard ? structuredCloneSafe(context.leaderboard) : null,
-      guildSnapshot: guildSnapshot(profile, viewedAt)
+      guildSnapshot: guildSnapshot(profile, viewedAt),
+      activitySnapshot: activitySnapshot(profile, viewedAt)
     };
   }
 
@@ -313,6 +329,7 @@
     const status = options && options.status;
     const guildState = options && options.guildState;
     const inviteOutcome = options && options.inviteOutcome;
+    const activityState = options && options.activityState;
     const category = options && options.category;
     const days = Number(options && options.days) || 0;
     const sort = (options && options.sort) || "lastViewedAt";
@@ -342,6 +359,8 @@
         if (guildState && guildState !== "all" && player.latestGuild?.state !== guildState) return false;
         if (inviteOutcome && inviteOutcome !== "all" && invite?.outcome !== inviteOutcome) return false;
         const playerObservations = observationMap.get(player.playerKey) || [];
+        const latestActivityState = activityStateForObservation(playerObservations[0]);
+        if (activityState && activityState !== "all" && latestActivityState !== activityState) return false;
         if (category && category !== "all" && !playerObservations.some((event) => event.leaderboard?.categoryHrid === category)) return false;
         if (cutoff) {
           const latestActivity = Math.max(Date.parse(player.lastViewedAt || 0) || 0, Date.parse(player.lastInvitedAt || 0) || 0);
@@ -370,6 +389,7 @@
 
   app.core = Object.freeze({
     OUTCOMES,
+    ACTIVITY_STATES,
     ERROR_OUTCOME,
     normalizeName,
     nullableNumber,
@@ -377,6 +397,8 @@
     uuid,
     playerKey,
     guildSnapshot,
+    activitySnapshot,
+    activityStateForObservation,
     mergePlayer,
     laterIso,
     playerFromProfile,
@@ -413,6 +435,7 @@
       search: "搜索玩家",
       allStatuses: "全部状态",
       allGuildStates: "全部公会状态",
+      allActivityStates: "全部活动状态",
       allCategories: "全部排行榜",
       allInviteOutcomes: "全部邀请结果",
       allTime: "全部时间",
@@ -423,6 +446,11 @@
       hasGuild: "有公会",
       ownGuild: "本公会成员",
       notChecked: "未查询",
+      activityWork: "工作",
+      activityOffline: "离线",
+      activityNone: "无",
+      activityUnrecorded: "无记录",
+      noGuildActivityUnrecorded: "无公会 · 在线数据无记录",
       guildStatus: "公会状态",
       inviting: "邀请中",
       invited: "已邀请",
@@ -715,6 +743,15 @@
       guildRole(value) {
         return mappedName(guildRoleNames, value, language);
       },
+      activityState(value) {
+        const key = {
+          work: "activityWork",
+          offline: "activityOffline",
+          none: "activityNone",
+          unrecorded: "activityUnrecorded"
+        }[value] || "activityUnrecorded";
+        return messages[language][key] || messages.zh[key] || key;
+      },
       leaderboardType(value) {
         return mappedName(leaderboardTypeNames, value, language);
       },
@@ -798,6 +835,14 @@
       return Number.isFinite(Number(skillId)) ? Number(skillId) : null;
     }
 
+    function profileActivityState(sharable) {
+      const actionType = typeof sharable.actionType === "string" ? sharable.actionType.trim() : "";
+      if (actionType) return "work";
+      if (sharable.hideOnlineStatus === true) return "none";
+      if (sharable.isOnline === false) return "offline";
+      return "none";
+    }
+
     function sanitizeLeaderboardRows(rows) {
       if (!Array.isArray(rows)) return [];
       return rows.slice(0, 500).map((row) => ({
@@ -868,7 +913,8 @@
             characterId: characterIdFromProfile(profile),
             guildId: profile.guildId ?? null,
             guildName: profile.guildName ?? null,
-            guildRole: profile.guildRole ?? null
+            guildRole: profile.guildRole ?? null,
+            activityState: profileActivityState(sharable)
           }
         };
       }
@@ -1779,7 +1825,10 @@
         typeof event.characterName === "string" &&
         core.isIsoDate(event.viewedAt) &&
         event.guildSnapshot &&
-        (event.guildSnapshot.state === "joined" || event.guildSnapshot.state === "none")
+        (event.guildSnapshot.state === "joined" || event.guildSnapshot.state === "none") &&
+        (!event.activitySnapshot ||
+          (core.ACTIVITY_STATES.has(event.activitySnapshot.state) &&
+            core.isIsoDate(event.activitySnapshot.observedAt)))
     );
   }
 
@@ -1993,7 +2042,7 @@
       ])
     ];
     const observations = [
-      ["id", "playerKey", "characterName", "viewedAt", "source", "leaderboardType", "leaderboardCategory", "rank", "value1", "value2", "guildState", "guildName", "guildRole"],
+      ["id", "playerKey", "characterName", "viewedAt", "source", "leaderboardType", "leaderboardCategory", "rank", "value1", "value2", "guildState", "guildName", "guildRole", "activityState"],
       ...data.profileObservations.map((event) => [
         event.id,
         event.playerKey,
@@ -2007,7 +2056,8 @@
         event.leaderboard?.value2,
         event.guildSnapshot?.state,
         event.guildSnapshot?.guildName,
-        event.guildSnapshot?.guildRole
+        event.guildSnapshot?.guildRole,
+        core.activityStateForObservation(event)
       ])
     ];
     const invites = [
@@ -2437,6 +2487,7 @@
     .mwi-git-player[aria-selected="true"] { background: rgba(87,213,202,.10); box-shadow: inset 2px 0 var(--mwi-git-scan); }
     .mwi-git-player-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--mwi-git-muted); }
     [data-status="no_guild"] .mwi-git-player-dot { background: var(--mwi-git-scan); box-shadow: 0 0 9px rgba(76,201,192,.5); }
+    [data-status="no_guild"][data-activity-state="unrecorded"] .mwi-git-player-dot { background: #f3f6fa; box-shadow: 0 0 7px rgba(243,246,250,.28); }
     [data-status="has_guild"] .mwi-git-player-dot { background: var(--mwi-git-shield); }
     [data-status="invited"] .mwi-git-player-dot { background: var(--mwi-git-warning); }
     [data-status="invite_failed"] .mwi-git-player-dot { background: var(--mwi-git-error); }
@@ -2484,6 +2535,7 @@
     .mwi-git-guild-marker[data-state="joined"] { color: #ef646f; }
     .mwi-git-guild-marker[data-state="own_guild"] { color: #aa83f2; }
     .mwi-git-guild-marker[data-state="none"] { color: #48d087; }
+    .mwi-git-guild-marker[data-state="none_unrecorded"] { color: #f3f6fa; }
     .mwi-git-guild-marker[data-state="inviting"] { color: #efbf4d; }
     .mwi-git-guild-marker[data-state="unchecked"] { color: #818b9d; }
     .mwi-git-guild-marker[data-state="unchecked"]::after { opacity: .38; }
@@ -2944,16 +2996,19 @@
     return Boolean(playerGuildName && ownGuildName && playerGuildName === ownGuildName);
   }
 
-  function guildMarkerState(player, invite, identity) {
+  function guildMarkerState(player, invite, identity, observation) {
     if (isOwnGuild(player, identity)) return "own_guild";
     if (player?.latestGuild?.state === "joined") return "joined";
     if (player?.latestGuild?.state === "none" && ["pending", "sent"].includes(invite?.outcome)) return "inviting";
+    if (player?.latestGuild?.state === "none" && core.activityStateForObservation(observation) === "unrecorded") {
+      return "none_unrecorded";
+    }
     if (player?.latestGuild?.state === "none") return "none";
     return "unchecked";
   }
 
   function titleFor(player, observation, invite, identity, i18n) {
-    const state = guildMarkerState(player, invite, identity);
+    const state = guildMarkerState(player, invite, identity, observation);
     const parts = [
       state === "own_guild"
         ? i18n.t("ownGuild")
@@ -2961,6 +3016,8 @@
         ? i18n.t("hasGuild")
         : state === "inviting"
           ? i18n.t("inviting")
+        : state === "none_unrecorded"
+          ? i18n.t("noGuildActivityUnrecorded")
         : state === "none"
           ? i18n.t("noGuild")
           : i18n.t("notChecked")
@@ -3019,7 +3076,7 @@
       const player = maps.byName.get(normalizedName) || null;
       const observation = player ? maps.observations.get(player.playerKey) : null;
       const invite = player ? maps.invites.get(player.playerKey) : null;
-      const state = guildMarkerState(player, invite, identity);
+      const state = guildMarkerState(player, invite, identity, observation);
       const title = titleFor(player, observation, invite, identity, i18n);
       let marker = cell.querySelector?.('.mwi-git-guild-marker[data-location="leaderboard"]') || null;
       if (!marker) marker = app.dom.element("span", {
@@ -3139,7 +3196,7 @@
       const player = maps.byName.get(core.normalizeName(name)) || null;
       const observation = player ? maps.observations.get(player.playerKey) : null;
       const invite = player ? maps.invites.get(player.playerKey) : null;
-      const state = app.leaderboardDecorations.guildMarkerState(player, invite, identity);
+      const state = app.leaderboardDecorations.guildMarkerState(player, invite, identity, observation);
       const title = app.leaderboardDecorations.titleFor(player, observation, invite, identity, i18n);
       let marker = Array.from(nameNode.children || []).find(
         (child) => child.classList?.contains("mwi-git-guild-marker") && child.dataset.location === "chat"
@@ -3373,6 +3430,17 @@
     return result;
   }
 
+  function latestObservationMap(observations) {
+    const result = new Map();
+    for (const event of observations || []) {
+      const previous = result.get(event.playerKey);
+      if (!previous || Date.parse(event.viewedAt || 0) >= Date.parse(previous.viewedAt || 0)) {
+        result.set(event.playerKey, event);
+      }
+    }
+    return result;
+  }
+
   function guildLabel(player, i18n) {
     if (player.latestGuild?.state === "joined") {
       return [player.latestGuild.guildName, i18n.guildRole(player.latestGuild.guildRole)].filter(Boolean).join(" · ") || i18n.t("hasGuild");
@@ -3386,6 +3454,7 @@
   function renderPlayerList(container, data, options, selectedKey, i18n, onSelect) {
     dom.clear(container);
     const invites = latestInviteMap(data.inviteEvents);
+    const observations = latestObservationMap(data.profileObservations);
     const players = core.filterPlayers(data.players, options, data.inviteEvents, data.profileObservations);
     if (!players.length) {
       container.append(dom.element("div", { className: "mwi-git-empty", text: i18n.t("emptyPlayers") }));
@@ -3393,20 +3462,25 @@
     }
     for (const player of players) {
       const invite = invites.get(player.playerKey);
+      const activityState = core.activityStateForObservation(observations.get(player.playerKey));
       const status = core.playerStatus(player, invite, Date.now(), app.config.staleProfileMs);
       const button = dom.element("button", {
         className: "mwi-git-player",
         type: "button",
         attributes: {
           "aria-selected": String(player.playerKey === selectedKey),
-          "data-status": status
+          "data-status": status,
+          "data-activity-state": activityState
         }
       });
       const dot = dom.element("span", { className: "mwi-git-player-dot", attributes: { "aria-hidden": "true" } });
       const copy = dom.element("span", { className: "mwi-git-player-copy" });
       copy.append(
         dom.element("span", { className: "mwi-git-player-name", text: player.currentName }),
-        dom.element("span", { className: "mwi-git-player-meta", text: guildLabel(player, i18n) })
+        dom.element("span", {
+          className: "mwi-git-player-meta",
+          text: `${guildLabel(player, i18n)} · ${i18n.activityState(activityState)}`
+        })
       );
       const time = dom.element("span", {
         className: "mwi-git-player-time",
@@ -3427,6 +3501,7 @@
     }
     const guild = event.guildSnapshot;
     details.push(guild?.state === "joined" ? [guild.guildName, i18n.guildRole(guild.guildRole)].filter(Boolean).join(" · ") : i18n.t("guildNone"));
+    details.push(i18n.activityState(core.activityStateForObservation(event)));
     return details.filter(Boolean).join(" · ");
   }
 
@@ -3476,7 +3551,7 @@
     container.append(head, list);
   }
 
-  app.historyView = Object.freeze({ latestInviteMap, guildLabel, renderPlayerList, renderTimeline });
+  app.historyView = Object.freeze({ latestInviteMap, latestObservationMap, guildLabel, renderPlayerList, renderTimeline });
 })(globalThis);
 
 // ---- src/ui/panel-shell.js ----
@@ -3495,6 +3570,7 @@
     const settings = {
       query: initialView.query || "",
       guildState: initialView.guildState || "all",
+      activityState: initialView.activityState || "all",
       category: initialView.category || "all",
       inviteOutcome: initialView.inviteOutcome || "all",
       days: initialView.days || "all",
@@ -3585,6 +3661,10 @@
     for (const [value, key] of [["all", "allGuildStates"], ["none", "noGuild"], ["joined", "hasGuild"], ["unknown", "unknown"]]) {
       guildState.append(dom.element("option", { text: i18n.t(key), attributes: { value } }));
     }
+    const activityState = dom.element("select", { className: "mwi-git-select", attributes: { "aria-label": i18n.t("allActivityStates") } });
+    for (const [value, key] of [["all", "allActivityStates"], ["work", "activityWork"], ["offline", "activityOffline"], ["none", "activityNone"], ["unrecorded", "activityUnrecorded"]]) {
+      activityState.append(dom.element("option", { text: i18n.t(key), attributes: { value } }));
+    }
     const category = dom.element("select", { className: "mwi-git-select", attributes: { "aria-label": i18n.t("allCategories") } });
     const inviteOutcome = dom.element("select", { className: "mwi-git-select", attributes: { "aria-label": i18n.t("allInviteOutcomes") } });
     inviteOutcome.append(dom.element("option", { text: i18n.t("allInviteOutcomes"), attributes: { value: "all" } }));
@@ -3601,10 +3681,11 @@
     }
     search.value = settings.query;
     guildState.value = settings.guildState;
+    activityState.value = settings.activityState;
     inviteOutcome.value = settings.inviteOutcome;
     days.value = settings.days;
     sort.value = settings.sort;
-    toolbar.append(search, guildState, category, inviteOutcome, days, sort);
+    toolbar.append(search, guildState, activityState, category, inviteOutcome, days, sort);
 
     const actions = dom.element("div", { className: "mwi-git-actions" });
     const exportJson = dom.element("button", { className: "mwi-git-button", text: i18n.t("exportJson"), type: "button" });
@@ -3718,6 +3799,7 @@
     backdrop.addEventListener("keydown", (event) => { if (event.key === "Escape") requestHide(); });
     search.addEventListener("input", () => { settings.query = search.value; render(); });
     guildState.addEventListener("change", () => { settings.guildState = guildState.value; render(); });
+    activityState.addEventListener("change", () => { settings.activityState = activityState.value; render(); });
     category.addEventListener("change", () => { settings.category = category.value; render(); });
     inviteOutcome.addEventListener("change", () => { settings.inviteOutcome = inviteOutcome.value; render(); });
     days.addEventListener("change", () => { settings.days = days.value; render(); });
