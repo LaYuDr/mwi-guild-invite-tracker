@@ -2,7 +2,7 @@
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
 // @namespace    https://github.com/layu/mwi-guild-invite-tracker
-// @version      0.2.0
+// @version      0.3.0
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
 // @description:en Passively records leaderboard profile views, guild status, and native guild invite outcomes
 // @match        https://www.milkywayidle.com/*
@@ -21,7 +21,7 @@
 
   app.config = Object.freeze({
     appId: "mwi-guild-invite-tracker",
-    version: "0.1.0",
+    version: "0.3.0",
     schemaVersion: 1,
     databaseName: "mwi-guild-invite-tracker",
     databaseVersion: 1,
@@ -392,6 +392,10 @@
       last90Days: "最近 90 天",
       noGuild: "无公会",
       hasGuild: "有公会",
+      ownGuild: "本公会成员",
+      notChecked: "未查询",
+      guildStatus: "公会状态",
+      inviting: "邀请中",
       invited: "已邀请",
       inviteFailed: "邀请失败",
       stale: "资料已过期",
@@ -464,6 +468,10 @@
       last90Days: "Last 90 days",
       noGuild: "No guild",
       hasGuild: "Has guild",
+      ownGuild: "Your guild member",
+      notChecked: "Not checked",
+      guildStatus: "Guild status",
+      inviting: "Invitation pending",
       invited: "Invited",
       inviteFailed: "Invite failed",
       stale: "Profile stale",
@@ -1913,7 +1921,7 @@
     .mwi-git-panel button:focus-visible,
     .mwi-git-panel input:focus-visible,
     .mwi-git-panel select:focus-visible,
-    .mwi-git-status:focus-visible {
+    .mwi-git-guild-marker:focus-visible {
       outline: 2px solid var(--mwi-git-scan);
       outline-offset: 2px;
     }
@@ -2049,12 +2057,44 @@
     .mwi-git-event-title { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; font-weight: 700; }
     .mwi-git-event-time { color: var(--mwi-git-muted); font: 10px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
     .mwi-git-event-detail { margin-top: 7px; color: var(--mwi-git-muted); font-size: 11px; line-height: 1.55; }
-    .mwi-git-status { display: inline-flex; vertical-align: middle; width: 9px; height: 9px; margin-left: 6px; border: 1px solid currentColor; border-radius: 50%; color: var(--mwi-git-muted); background: transparent; cursor: help; }
-    .mwi-git-status[data-status="no_guild"] { color: var(--mwi-git-scan); background: currentColor; box-shadow: 0 0 8px rgba(76,201,192,.55); }
-    .mwi-git-status[data-status="has_guild"] { color: var(--mwi-git-shield); background: currentColor; border-radius: 2px 2px 5px 5px; }
-    .mwi-git-status[data-status="invited"] { color: var(--mwi-git-warning); background: currentColor; }
-    .mwi-git-status[data-status="invite_failed"] { color: var(--mwi-git-error); background: currentColor; }
-    .mwi-git-status[data-status="stale"] { opacity: .45; border-style: dashed; }
+    .mwi-git-leaderboard-host { position: relative !important; }
+    .mwi-git-leaderboard-rail {
+      position: absolute;
+      inset: 0 auto 0 0;
+      z-index: 2;
+      overflow: hidden;
+      pointer-events: none;
+    }
+    .mwi-git-leaderboard-rail[hidden],
+    .mwi-git-guild-marker[hidden] { display: none; }
+    .mwi-git-guild-marker {
+      position: absolute;
+      left: 50%;
+      box-sizing: border-box;
+      width: 16px;
+      height: 16px;
+      border: 2px solid currentColor;
+      border-radius: 50%;
+      color: #818b9d;
+      background: #101722;
+      box-shadow: 0 2px 8px rgba(0,0,0,.42), inset 0 0 0 2px rgba(255,255,255,.06);
+      transform: translate(-50%, -50%);
+      cursor: help;
+      pointer-events: auto;
+    }
+    .mwi-git-guild-marker::after {
+      content: "";
+      position: absolute;
+      inset: 3px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+    .mwi-git-guild-marker[data-state="joined"] { color: #ef646f; }
+    .mwi-git-guild-marker[data-state="own_guild"] { color: #aa83f2; }
+    .mwi-git-guild-marker[data-state="none"] { color: #48d087; }
+    .mwi-git-guild-marker[data-state="inviting"] { color: #efbf4d; }
+    .mwi-git-guild-marker[data-state="unchecked"] { color: #818b9d; }
+    .mwi-git-guild-marker[data-state="unchecked"]::after { opacity: .38; }
     .mwi-git-dialog-backdrop { position: fixed; inset: 0; z-index: 2147483010; display: grid; place-items: center; padding: 18px; background: rgba(5,9,15,.76); }
     .mwi-git-dialog { width: min(520px, 100%); max-height: 85vh; overflow: auto; padding: 20px; border: 1px solid var(--mwi-git-metal); border-radius: 9px; color: var(--mwi-git-text); background: var(--mwi-git-panel); box-shadow: 0 24px 70px var(--mwi-git-shadow); }
     .mwi-git-dialog h2 { margin: 0 0 14px; font-size: 18px; }
@@ -2371,6 +2411,8 @@
 
   const app = (root.MWIGuildInviteTracker = root.MWIGuildInviteTracker || {});
   const core = app.core;
+  const RANK_HEADERS = new Set(["排名", "rank"]);
+  const NAME_HEADERS = new Set(["名称", "name"]);
 
   function latestByPlayer(events, dateField) {
     const map = new Map();
@@ -2396,41 +2438,249 @@
     };
   }
 
-  function titleFor(player, invite, observation, i18n) {
-    const status = core.playerStatus(player, invite, Date.now(), app.config.staleProfileMs);
-    const parts = [i18n.t(status === "no_guild" ? "noGuild" : status === "has_guild" ? "hasGuild" : status)];
+  function normalizedCellText(cell) {
+    return String(cell?.innerText || cell?.textContent || "").trim();
+  }
+
+  function isLeaderboardTable(table) {
+    const cells = Array.from(table?.tHead?.rows?.[0]?.cells || []);
+    if (cells.length < 2) return false;
+    const rank = normalizedCellText(cells[0]).toLowerCase();
+    const name = normalizedCellText(cells[1]).toLowerCase();
+    return RANK_HEADERS.has(rank) && NAME_HEADERS.has(name);
+  }
+
+  function leaderboardRows(table) {
+    const rows = [];
+    for (const body of Array.from(table?.tBodies || [])) {
+      for (const row of Array.from(body.rows || [])) {
+        if (!row.cells || row.cells.length < 2) continue;
+        const name = normalizedCellText(row.cells[1]).split("\n")[0].trim();
+        if (name) rows.push({ row, name });
+      }
+    }
+    return rows;
+  }
+
+  function isOwnGuild(player, identity) {
+    if (player?.latestGuild?.state !== "joined" || !identity) return false;
+    const playerGuildId = core.nullableNumber(player.latestGuild.guildId);
+    const ownGuildId = core.nullableNumber(identity.guildId);
+    if (playerGuildId !== null && ownGuildId !== null) return playerGuildId === ownGuildId;
+    const playerGuildName = core.normalizeName(player.latestGuild.guildName);
+    const ownGuildName = core.normalizeName(identity.guildName);
+    return Boolean(playerGuildName && ownGuildName && playerGuildName === ownGuildName);
+  }
+
+  function guildMarkerState(player, invite, identity) {
+    if (isOwnGuild(player, identity)) return "own_guild";
+    if (player?.latestGuild?.state === "joined") return "joined";
+    if (player?.latestGuild?.state === "none" && ["pending", "sent"].includes(invite?.outcome)) return "inviting";
+    if (player?.latestGuild?.state === "none") return "none";
+    return "unchecked";
+  }
+
+  function titleFor(player, observation, invite, identity, i18n) {
+    const state = guildMarkerState(player, invite, identity);
+    const parts = [
+      state === "own_guild"
+        ? i18n.t("ownGuild")
+        : state === "joined"
+        ? i18n.t("hasGuild")
+        : state === "inviting"
+          ? i18n.t("inviting")
+        : state === "none"
+          ? i18n.t("noGuild")
+          : i18n.t("notChecked")
+    ];
+    if (state === "joined" && player.latestGuild?.guildName) parts.push(player.latestGuild.guildName);
     if (observation?.leaderboard) {
       parts.push(`${observation.leaderboard.categoryHrid || "?"} · ${i18n.t("rank")} ${observation.leaderboard.rank ?? "—"}`);
     }
-    if (player.lastViewedAt) parts.push(`${i18n.t("checkedAt")} ${app.dom.formatDate(player.lastViewedAt, i18n.language)}`);
-    if (invite) parts.push(`${i18n.t("outcome")}: ${i18n.t(invite.outcome)}`);
+    if (player?.lastViewedAt) {
+      parts.push(`${i18n.t("checkedAt")} ${app.dom.formatDate(player.lastViewedAt, i18n.language)}`);
+    }
+    if (state === "inviting" && invite?.attemptedAt) {
+      parts.push(`${i18n.t("inviteAttempt")} ${app.dom.formatDate(invite.attemptedAt, i18n.language)}`);
+    }
     return parts.join("\n");
   }
 
-  function decorate(data, i18n) {
-    const maps = summaryMaps(data);
-    const names = root.document.querySelectorAll('[data-name="PlayerName"]');
-    for (const nameNode of names) {
-      const name = nameNode.textContent?.trim();
-      const host = nameNode.parentElement || nameNode;
-      const existing = host.querySelector(":scope > .mwi-git-status");
-      const player = maps.byName.get(core.normalizeName(name));
-      if (!player) {
-        if (existing) existing.remove();
-        continue;
+  function visibleTable(table) {
+    if (!table?.isConnected || typeof table.getBoundingClientRect !== "function") return false;
+    const rect = table.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  function gutterIntegration(table) {
+    const scroller = table?.parentElement;
+    const content = scroller?.parentElement;
+    if (!scroller || !content || typeof content.getBoundingClientRect !== "function") return null;
+    const contentRect = content.getBoundingClientRect();
+    let host = content.parentElement;
+    for (let depth = 0; host && depth < 4; depth += 1, host = host.parentElement) {
+      if (typeof host.getBoundingClientRect !== "function") continue;
+      const hostRect = host.getBoundingClientRect();
+      const gap = contentRect.left - hostRect.left;
+      if (gap >= 24 && hostRect.right >= contentRect.right - 1) {
+        return { table, scroller, content, host, gap };
       }
-      const invite = maps.invites.get(player.playerKey);
-      const observation = maps.observations.get(player.playerKey);
-      const status = core.playerStatus(player, invite, Date.now(), app.config.staleProfileMs);
-      const badge = existing || app.dom.element("span", { className: "mwi-git-status", attributes: { tabindex: "0" } });
-      badge.dataset.status = status;
-      badge.title = titleFor(player, invite, observation, i18n);
-      badge.setAttribute("aria-label", badge.title.replace(/\n/g, ", "));
-      if (!existing) host.append(badge);
+    }
+    return null;
+  }
+
+  function cancelRailFrame(rail) {
+    if (!rail.__mwiGitFrame) return;
+    if (typeof root.cancelAnimationFrame === "function") root.cancelAnimationFrame(rail.__mwiGitFrame);
+    else root.clearTimeout(rail.__mwiGitFrame);
+    rail.__mwiGitFrame = 0;
+  }
+
+  function removeRail(rail) {
+    if (!rail) return;
+    cancelRailFrame(rail);
+    rail.__mwiGitResizeObserver?.disconnect();
+    rail.__mwiGitScroller?.removeEventListener("scroll", rail.__mwiGitScrollHandler);
+    const host = rail.parentElement;
+    rail.remove();
+    if (host && !host.querySelector(":scope > .mwi-git-leaderboard-rail")) {
+      host.classList.remove("mwi-git-leaderboard-host");
     }
   }
 
-  app.leaderboardDecorations = Object.freeze({ latestByPlayer, summaryMaps, titleFor, decorate });
+  function positionRail(rail) {
+    rail.__mwiGitFrame = 0;
+    const table = rail.__mwiGitTable;
+    const scroller = rail.__mwiGitScroller;
+    const content = scroller?.parentElement;
+    const host = rail.parentElement;
+    if (!table?.isConnected || !scroller?.isConnected || !content?.isConnected || !host?.isConnected) {
+      removeRail(rail);
+      return;
+    }
+    const hostRect = host.getBoundingClientRect();
+    const contentRect = content.getBoundingClientRect();
+    const scrollerRect = scroller.getBoundingClientRect();
+    const gap = Math.max(0, contentRect.left - hostRect.left);
+    rail.hidden = gap < 24;
+    rail.style.width = `${Math.round(gap)}px`;
+    for (const marker of Array.from(rail.children || [])) {
+      const rowRect = marker.__mwiGitRow?.getBoundingClientRect();
+      if (!rowRect) {
+        marker.hidden = true;
+        continue;
+      }
+      const visible = rowRect.bottom > scrollerRect.top && rowRect.top < scrollerRect.bottom;
+      marker.hidden = !visible;
+      marker.style.top = `${rowRect.top - hostRect.top + rowRect.height / 2}px`;
+    }
+  }
+
+  function scheduleRailPosition(rail) {
+    if (!rail || rail.__mwiGitFrame) return;
+    const schedule = root.requestAnimationFrame || ((callback) => root.setTimeout(callback, 16));
+    rail.__mwiGitFrame = schedule(() => positionRail(rail));
+  }
+
+  function ensureRail(integration, i18n) {
+    const { table, scroller, host } = integration;
+    let rail = Array.from(host.children || []).find(
+      (node) => node.classList?.contains("mwi-git-leaderboard-rail") && node.__mwiGitTable === table
+    );
+    for (const stale of Array.from(host.children || []).filter(
+      (node) => node.classList?.contains("mwi-git-leaderboard-rail") && node.__mwiGitTable !== table
+    )) {
+      removeRail(stale);
+    }
+    if (rail) {
+      rail.setAttribute("aria-label", i18n.t("guildStatus"));
+      return rail;
+    }
+    rail = app.dom.element("div", {
+      className: "mwi-git-leaderboard-rail",
+      attributes: { "aria-label": i18n.t("guildStatus") }
+    });
+    rail.__mwiGitTable = table;
+    rail.__mwiGitScroller = scroller;
+    rail.__mwiGitScrollHandler = () => scheduleRailPosition(rail);
+    scroller.addEventListener("scroll", rail.__mwiGitScrollHandler, { passive: true });
+    if (typeof root.ResizeObserver === "function") {
+      rail.__mwiGitResizeObserver = new root.ResizeObserver(() => scheduleRailPosition(rail));
+      rail.__mwiGitResizeObserver.observe(host);
+      rail.__mwiGitResizeObserver.observe(scroller);
+    }
+    host.classList.add("mwi-git-leaderboard-host");
+    host.append(rail);
+    return rail;
+  }
+
+  function updateMarkers(rail, rows, maps, identity, i18n) {
+    const existing = new Map(
+      Array.from(rail.children || []).map((marker) => [marker.dataset.rowKey, marker])
+    );
+    const used = new Set();
+    rows.forEach(({ row, name }, index) => {
+      const normalizedName = core.normalizeName(name);
+      const rowKey = `${normalizedName}:${index}`;
+      const player = maps.byName.get(normalizedName) || null;
+      const observation = player ? maps.observations.get(player.playerKey) : null;
+      const invite = player ? maps.invites.get(player.playerKey) : null;
+      const state = guildMarkerState(player, invite, identity);
+      const title = titleFor(player, observation, invite, identity, i18n);
+      const marker = existing.get(rowKey) || app.dom.element("span", {
+        className: "mwi-git-guild-marker",
+        attributes: { role: "img" }
+      });
+      marker.dataset.rowKey = rowKey;
+      marker.dataset.state = state;
+      marker.title = title;
+      marker.setAttribute("aria-label", `${name}: ${title.replace(/\n/g, ", ")}`);
+      marker.__mwiGitRow = row;
+      if (!marker.isConnected) rail.append(marker);
+      used.add(rowKey);
+    });
+    for (const [rowKey, marker] of existing) {
+      if (!used.has(rowKey)) marker.remove();
+    }
+  }
+
+  function decorate(data, i18n, identity) {
+    const maps = summaryMaps(data);
+    for (const legacy of Array.from(root.document.querySelectorAll(".mwi-git-status"))) legacy.remove();
+    const activeTables = new Set();
+    for (const table of Array.from(root.document.querySelectorAll("table"))) {
+      if (!isLeaderboardTable(table) || !visibleTable(table)) continue;
+      const integration = gutterIntegration(table);
+      if (!integration) continue;
+      const rows = leaderboardRows(table);
+      const rail = ensureRail(integration, i18n);
+      activeTables.add(table);
+      updateMarkers(rail, rows, maps, identity, i18n);
+      positionRail(rail);
+    }
+    for (const rail of Array.from(root.document.querySelectorAll(".mwi-git-leaderboard-rail"))) {
+      if (!activeTables.has(rail.__mwiGitTable)) removeRail(rail);
+    }
+  }
+
+  function clear() {
+    for (const rail of Array.from(root.document.querySelectorAll(".mwi-git-leaderboard-rail"))) removeRail(rail);
+    for (const legacy of Array.from(root.document.querySelectorAll(".mwi-git-status"))) legacy.remove();
+  }
+
+  app.leaderboardDecorations = Object.freeze({
+    latestByPlayer,
+    summaryMaps,
+    normalizedCellText,
+    isLeaderboardTable,
+    leaderboardRows,
+    isOwnGuild,
+    guildMarkerState,
+    titleFor,
+    gutterIntegration,
+    decorate,
+    clear
+  });
 })(globalThis);
 
 // ---- src/ui/import-export-dialog.js ----
@@ -2909,7 +3159,7 @@
   const settings = loadSettings();
   const i18n = app.localization.createI18n(settings.language);
   const decorationScheduler = app.scheduler.frameScheduler(() => {
-    app.leaderboardDecorations.decorate(currentData, i18n);
+    app.leaderboardDecorations.decorate(currentData, i18n, identity);
   });
 
   function loadSettings() {
@@ -3130,6 +3380,7 @@
       root.removeEventListener(app.config.bridgeEvent, handleBridge);
       observer?.disconnect();
       decorationScheduler.destroy();
+      app.leaderboardDecorations.clear();
       sidebar?.destroy();
       panel?.destroy();
       await repository.close();
