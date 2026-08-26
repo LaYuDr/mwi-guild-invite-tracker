@@ -2,7 +2,7 @@
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
 // @namespace    https://github.com/layu/mwi-guild-invite-tracker
-// @version      0.3.1
+// @version      0.3.2
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
 // @description:en Passively records leaderboard profile views, guild status, and native guild invite outcomes
 // @match        https://www.milkywayidle.com/*
@@ -21,7 +21,7 @@
 
   app.config = Object.freeze({
     appId: "mwi-guild-invite-tracker",
-    version: "0.3.1",
+    version: "0.3.2",
     schemaVersion: 1,
     databaseName: "mwi-guild-invite-tracker",
     databaseVersion: 1,
@@ -406,6 +406,10 @@
       title: "招募档案",
       subtitle: "排行榜查看与公会邀请记录",
       close: "关闭",
+      settings: "设置",
+      indicatorLocations: "状态指示器显示位置",
+      showOnLeaderboards: "排行榜",
+      showInChat: "聊天室",
       search: "搜索玩家",
       allStatuses: "全部状态",
       allGuildStates: "全部公会状态",
@@ -2024,6 +2028,45 @@
   app.scheduler = Object.freeze({ frameScheduler });
 })(globalThis);
 
+// ---- src/runtime/display-preferences.js ----
+(function initDisplayPreferences(root) {
+  "use strict";
+
+  const app = (root.MWIGuildInviteTracker = root.MWIGuildInviteTracker || {});
+  const defaults = Object.freeze({ leaderboard: true, chat: true });
+
+  function normalize(value) {
+    return {
+      leaderboard: value?.leaderboard !== false,
+      chat: value?.chat !== false
+    };
+  }
+
+  function createStore(storage, key) {
+    function load() {
+      try {
+        return normalize(JSON.parse(storage?.getItem(key) || "null"));
+      } catch (_error) {
+        return normalize(defaults);
+      }
+    }
+
+    function save(value) {
+      const next = normalize(value);
+      try {
+        storage?.setItem(key, JSON.stringify(next));
+      } catch (_error) {
+        // The current session still uses the selected values when storage is unavailable.
+      }
+      return next;
+    }
+
+    return Object.freeze({ load, save });
+  }
+
+  app.displayPreferences = Object.freeze({ defaults, normalize, createStore });
+})(globalThis);
+
 // ---- src/ui/dom.js ----
 (function initDom(root) {
   "use strict";
@@ -2169,7 +2212,7 @@
       container-type: inline-size;
     }
     @keyframes mwi-git-enter { from { transform: translateX(18px); opacity: .7; } }
-    .mwi-git-shell { height: 100%; display: grid; grid-template-rows: auto auto auto minmax(0, 1fr); }
+    .mwi-git-shell { height: 100%; display: grid; grid-template-rows: auto auto auto auto minmax(0, 1fr); }
     .mwi-git-header {
       display: flex;
       align-items: center;
@@ -2196,6 +2239,46 @@
     .mwi-git-button { min-height: 34px; padding: 0 11px; }
     .mwi-git-button:hover, .mwi-git-icon-button:hover { border-color: var(--mwi-git-scan); }
     .mwi-git-button--danger { color: #ffd7d2; border-color: rgba(228,111,97,.55); }
+    .mwi-git-settings-button { min-height: 30px; }
+    .mwi-git-display-settings {
+      display: grid;
+      grid-template-columns: minmax(120px, 1fr) repeat(2, minmax(110px, auto));
+      align-items: center;
+      gap: 8px 18px;
+      padding: 9px 20px;
+      border-bottom: 1px solid rgba(52,70,91,.72);
+      background: var(--mwi-git-panel);
+    }
+    .mwi-git-display-settings[hidden] { display: none; }
+    .mwi-git-display-settings h3 { margin: 0; color: var(--mwi-git-muted); font-size: 12px; }
+    .mwi-git-switch-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12px; cursor: pointer; }
+    .mwi-git-switch {
+      position: relative;
+      box-sizing: border-box;
+      width: 32px;
+      height: 18px;
+      flex: 0 0 auto;
+      margin: 0;
+      border: 1px solid var(--mwi-git-metal);
+      border-radius: 999px;
+      appearance: none;
+      background: #101a28;
+      cursor: pointer;
+      transition: border-color 140ms ease, background 140ms ease;
+    }
+    .mwi-git-switch::after {
+      content: "";
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--mwi-git-muted);
+      transition: transform 140ms ease, background 140ms ease;
+    }
+    .mwi-git-switch:checked { border-color: var(--mwi-git-scan); background: rgba(76,201,192,.18); }
+    .mwi-git-switch:checked::after { background: var(--mwi-git-scan); transform: translateX(14px); }
     .mwi-git-collapsible { min-width: 0; background: var(--mwi-git-panel); }
     .mwi-git-section-toggle {
       box-sizing: border-box;
@@ -2297,35 +2380,27 @@
     .mwi-git-event-title { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; font-weight: 700; }
     .mwi-git-event-time { color: var(--mwi-git-muted); font: 10px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
     .mwi-git-event-detail { margin-top: 7px; color: var(--mwi-git-muted); font-size: 11px; line-height: 1.55; }
-    .mwi-git-leaderboard-host { position: relative !important; }
-    .mwi-git-leaderboard-rail {
-      position: absolute;
-      inset: 0 auto 0 0;
-      z-index: 2;
-      overflow: hidden;
-      pointer-events: none;
-    }
-    .mwi-git-leaderboard-rail[hidden],
-    .mwi-git-guild-marker[hidden] { display: none; }
     .mwi-git-guild-marker {
-      position: absolute;
-      left: 50%;
+      --mwi-git-marker-size: 1.2em;
+      position: relative;
+      display: inline-block;
       box-sizing: border-box;
-      width: 16px;
-      height: 16px;
-      border: 2px solid currentColor;
+      width: var(--mwi-git-marker-size);
+      height: var(--mwi-git-marker-size);
+      margin-inline-end: .35em;
+      border: calc(var(--mwi-git-marker-size) * .1) solid currentColor;
       border-radius: 50%;
       color: #818b9d;
       background: #101722;
       box-shadow: 0 2px 8px rgba(0,0,0,.42), inset 0 0 0 2px rgba(255,255,255,.06);
-      transform: translate(-50%, -50%);
+      vertical-align: -.16em;
       cursor: help;
-      pointer-events: auto;
+      flex: 0 0 auto;
     }
     .mwi-git-guild-marker::after {
       content: "";
       position: absolute;
-      inset: 3px;
+      inset: 24%;
       border-radius: 50%;
       background: currentColor;
     }
@@ -2335,28 +2410,6 @@
     .mwi-git-guild-marker[data-state="inviting"] { color: #efbf4d; }
     .mwi-git-guild-marker[data-state="unchecked"] { color: #818b9d; }
     .mwi-git-guild-marker[data-state="unchecked"]::after { opacity: .38; }
-    .mwi-git-own-guild-badge {
-      position: relative;
-      display: inline-block;
-      box-sizing: border-box;
-      width: 12px;
-      height: 12px;
-      margin-inline-start: 5px;
-      border: 2px solid #aa83f2;
-      border-radius: 50%;
-      color: #aa83f2;
-      background: #101722;
-      box-shadow: 0 2px 6px rgba(0,0,0,.36);
-      vertical-align: -1px;
-      cursor: help;
-    }
-    .mwi-git-own-guild-badge::after {
-      content: "";
-      position: absolute;
-      inset: 2px;
-      border-radius: 50%;
-      background: currentColor;
-    }
     .mwi-git-dialog-backdrop { position: fixed; inset: 0; z-index: 2147483010; display: grid; place-items: center; padding: 18px; background: rgba(5,9,15,.76); }
     .mwi-git-dialog { width: min(520px, 100%); max-height: 85vh; overflow: auto; padding: 20px; border: 1px solid var(--mwi-git-metal); border-radius: 9px; color: var(--mwi-git-text); background: var(--mwi-git-panel); box-shadow: 0 24px 70px var(--mwi-git-shadow); }
     .mwi-git-dialog h2 { margin: 0 0 14px; font-size: 18px; }
@@ -2378,6 +2431,8 @@
     .mwi-git-panel--native .mwi-git-input,
     .mwi-git-panel--native .mwi-git-select { height: 32px; padding-inline: 8px; font-size: 11px; }
     .mwi-git-panel--native .mwi-git-actions { gap: 6px; padding: 8px 10px; }
+    .mwi-git-panel--native .mwi-git-display-settings { grid-template-columns: 1fr; gap: 7px; padding: 8px 10px; }
+    .mwi-git-panel--native .mwi-git-switch-row { min-height: 28px; }
     .mwi-git-panel--native .mwi-git-section-toggle { min-height: 28px; padding: 6px 10px; }
     .mwi-git-panel--native .mwi-git-button { min-height: 32px; padding-inline: 8px; font-size: 10px; }
     .mwi-git-panel--native .mwi-git-summary { width: 100%; margin: 2px 0 0; }
@@ -2725,7 +2780,7 @@
       for (const row of Array.from(body.rows || [])) {
         if (!row.cells || row.cells.length < 2) continue;
         const name = normalizedCellText(row.cells[1]).split("\n")[0].trim();
-        if (name) rows.push({ row, name });
+        if (name) rows.push({ row, cell: row.cells[1], name });
       }
     }
     return rows;
@@ -2781,159 +2836,81 @@
     return rect.width > 0 && rect.height > 0;
   }
 
-  function gutterIntegration(table) {
-    const scroller = table?.parentElement;
-    const content = scroller?.parentElement;
-    if (!scroller || !content || typeof content.getBoundingClientRect !== "function") return null;
-    const contentRect = content.getBoundingClientRect();
-    let host = content.parentElement;
-    for (let depth = 0; host && depth < 4; depth += 1, host = host.parentElement) {
-      if (typeof host.getBoundingClientRect !== "function") continue;
-      const hostRect = host.getBoundingClientRect();
-      const gap = contentRect.left - hostRect.left;
-      if (gap >= 24 && hostRect.right >= contentRect.right - 1) {
-        return { table, scroller, content, host, gap };
-      }
+  function markerSizeForCell(cell) {
+    const candidates = Array.from(cell?.querySelectorAll?.("img, svg, span") || []);
+    for (const node of candidates) {
+      if (node.classList?.contains("mwi-git-guild-marker")) continue;
+      if (typeof node.getBoundingClientRect !== "function") continue;
+      const rect = node.getBoundingClientRect();
+      if (rect.width < 12 || rect.height < 12 || rect.width > 48 || rect.height > 48) continue;
+      const ratio = rect.width / rect.height;
+      if (ratio >= 0.65 && ratio <= 1.5) return Math.round(Math.max(rect.width, rect.height));
     }
-    return null;
+    const computed = typeof root.getComputedStyle === "function" ? root.getComputedStyle(cell) : null;
+    const fontSize = Number.parseFloat(computed?.fontSize) || 16;
+    const lineHeight = Number.parseFloat(computed?.lineHeight);
+    const inferred = Number.isFinite(lineHeight) ? Math.min(lineHeight, fontSize * 1.35) : fontSize * 1.2;
+    return Math.round(Math.max(16, Math.min(36, inferred)));
   }
 
-  function cancelRailFrame(rail) {
-    if (!rail.__mwiGitFrame) return;
-    if (typeof root.cancelAnimationFrame === "function") root.cancelAnimationFrame(rail.__mwiGitFrame);
-    else root.clearTimeout(rail.__mwiGitFrame);
-    rail.__mwiGitFrame = 0;
-  }
-
-  function removeRail(rail) {
-    if (!rail) return;
-    cancelRailFrame(rail);
-    rail.__mwiGitResizeObserver?.disconnect();
-    rail.__mwiGitScroller?.removeEventListener("scroll", rail.__mwiGitScrollHandler);
-    const host = rail.parentElement;
-    rail.remove();
-    if (host && !host.querySelector(":scope > .mwi-git-leaderboard-rail")) {
-      host.classList.remove("mwi-git-leaderboard-host");
+  function removeLegacyRails() {
+    for (const rail of Array.from(root.document.querySelectorAll(".mwi-git-leaderboard-rail"))) {
+      rail.parentElement?.classList?.remove("mwi-git-leaderboard-host");
+      rail.remove();
     }
   }
 
-  function positionRail(rail) {
-    rail.__mwiGitFrame = 0;
-    const table = rail.__mwiGitTable;
-    const scroller = rail.__mwiGitScroller;
-    const content = scroller?.parentElement;
-    const host = rail.parentElement;
-    if (!table?.isConnected || !scroller?.isConnected || !content?.isConnected || !host?.isConnected) {
-      removeRail(rail);
-      return;
-    }
-    const hostRect = host.getBoundingClientRect();
-    const contentRect = content.getBoundingClientRect();
-    const scrollerRect = scroller.getBoundingClientRect();
-    const gap = Math.max(0, contentRect.left - hostRect.left);
-    rail.hidden = gap < 24;
-    rail.style.width = `${Math.round(gap)}px`;
-    for (const marker of Array.from(rail.children || [])) {
-      const rowRect = marker.__mwiGitRow?.getBoundingClientRect();
-      if (!rowRect) {
-        marker.hidden = true;
-        continue;
-      }
-      const visible = rowRect.bottom > scrollerRect.top && rowRect.top < scrollerRect.bottom;
-      marker.hidden = !visible;
-      marker.style.top = `${rowRect.top - hostRect.top + rowRect.height / 2}px`;
-    }
-  }
-
-  function scheduleRailPosition(rail) {
-    if (!rail || rail.__mwiGitFrame) return;
-    const schedule = root.requestAnimationFrame || ((callback) => root.setTimeout(callback, 16));
-    rail.__mwiGitFrame = schedule(() => positionRail(rail));
-  }
-
-  function ensureRail(integration, i18n) {
-    const { table, scroller, host } = integration;
-    let rail = Array.from(host.children || []).find(
-      (node) => node.classList?.contains("mwi-git-leaderboard-rail") && node.__mwiGitTable === table
-    );
-    for (const stale of Array.from(host.children || []).filter(
-      (node) => node.classList?.contains("mwi-git-leaderboard-rail") && node.__mwiGitTable !== table
-    )) {
-      removeRail(stale);
-    }
-    if (rail) {
-      rail.setAttribute("aria-label", i18n.t("guildStatus"));
-      return rail;
-    }
-    rail = app.dom.element("div", {
-      className: "mwi-git-leaderboard-rail",
-      attributes: { "aria-label": i18n.t("guildStatus") }
-    });
-    rail.__mwiGitTable = table;
-    rail.__mwiGitScroller = scroller;
-    rail.__mwiGitScrollHandler = () => scheduleRailPosition(rail);
-    scroller.addEventListener("scroll", rail.__mwiGitScrollHandler, { passive: true });
-    if (typeof root.ResizeObserver === "function") {
-      rail.__mwiGitResizeObserver = new root.ResizeObserver(() => scheduleRailPosition(rail));
-      rail.__mwiGitResizeObserver.observe(host);
-      rail.__mwiGitResizeObserver.observe(scroller);
-    }
-    host.classList.add("mwi-git-leaderboard-host");
-    host.append(rail);
-    return rail;
-  }
-
-  function updateMarkers(rail, rows, maps, identity, i18n) {
-    const existing = new Map(
-      Array.from(rail.children || []).map((marker) => [marker.dataset.rowKey, marker])
-    );
-    const used = new Set();
-    rows.forEach(({ row, name }, index) => {
+  function updateMarkers(rows, maps, identity, i18n, used) {
+    rows.forEach(({ cell, name }) => {
       const normalizedName = core.normalizeName(name);
-      const rowKey = `${normalizedName}:${index}`;
       const player = maps.byName.get(normalizedName) || null;
       const observation = player ? maps.observations.get(player.playerKey) : null;
       const invite = player ? maps.invites.get(player.playerKey) : null;
       const state = guildMarkerState(player, invite, identity);
       const title = titleFor(player, observation, invite, identity, i18n);
-      const marker = existing.get(rowKey) || app.dom.element("span", {
+      let marker = Array.from(cell.children || []).find((node) => node.classList?.contains("mwi-git-guild-marker"));
+      if (!marker) marker = app.dom.element("span", {
         className: "mwi-git-guild-marker",
         attributes: { role: "img" }
       });
-      marker.dataset.rowKey = rowKey;
+      marker.dataset.location = "leaderboard";
       marker.dataset.state = state;
       marker.title = title;
       marker.setAttribute("aria-label", `${name}: ${title.replace(/\n/g, ", ")}`);
-      marker.__mwiGitRow = row;
-      if (!marker.isConnected) rail.append(marker);
-      used.add(rowKey);
+      marker.style.setProperty("--mwi-git-marker-size", `${markerSizeForCell(cell)}px`);
+      if (cell.firstChild !== marker) cell.prepend(marker);
+      used.add(marker);
     });
-    for (const [rowKey, marker] of existing) {
-      if (!used.has(rowKey)) marker.remove();
+  }
+
+  function clearMarkers() {
+    for (const marker of Array.from(root.document.querySelectorAll('.mwi-git-guild-marker[data-location="leaderboard"]'))) {
+      marker.remove();
     }
   }
 
-  function decorate(data, i18n, identity) {
+  function decorate(data, i18n, identity, enabled = true) {
     const maps = summaryMaps(data);
     for (const legacy of Array.from(root.document.querySelectorAll(".mwi-git-status"))) legacy.remove();
-    const activeTables = new Set();
+    removeLegacyRails();
+    if (!enabled) {
+      clearMarkers();
+      return;
+    }
+    const used = new Set();
     for (const table of Array.from(root.document.querySelectorAll("table"))) {
       if (!isLeaderboardTable(table) || !visibleTable(table)) continue;
-      const integration = gutterIntegration(table);
-      if (!integration) continue;
       const rows = leaderboardRows(table);
-      const rail = ensureRail(integration, i18n);
-      activeTables.add(table);
-      updateMarkers(rail, rows, maps, identity, i18n);
-      positionRail(rail);
+      updateMarkers(rows, maps, identity, i18n, used);
     }
-    for (const rail of Array.from(root.document.querySelectorAll(".mwi-git-leaderboard-rail"))) {
-      if (!activeTables.has(rail.__mwiGitTable)) removeRail(rail);
+    for (const marker of Array.from(root.document.querySelectorAll('.mwi-git-guild-marker[data-location="leaderboard"]'))) {
+      if (!used.has(marker)) marker.remove();
     }
   }
 
   function clear() {
-    for (const rail of Array.from(root.document.querySelectorAll(".mwi-git-leaderboard-rail"))) removeRail(rail);
+    removeLegacyRails();
+    clearMarkers();
     for (const legacy of Array.from(root.document.querySelectorAll(".mwi-git-status"))) legacy.remove();
   }
 
@@ -2946,102 +2923,93 @@
     isOwnGuild,
     guildMarkerState,
     titleFor,
-    gutterIntegration,
+    markerSizeForCell,
     decorate,
     clear
   });
 })(globalThis);
 
-// ---- src/ui/member-decorations.js ----
-(function initMemberDecorations(root) {
+// ---- src/ui/chat-decorations.js ----
+(function initChatDecorations(root) {
   "use strict";
 
   const app = (root.MWIGuildInviteTracker = root.MWIGuildInviteTracker || {});
   const core = app.core;
+  const CHAT_NAME_SELECTOR = '[class*="ChatMessage_name__"]';
+  const CHARACTER_NAME_SELECTOR = '[class*="CharacterName_characterName__"]';
 
-  function ownGuildNames(data, identity) {
-    const names = new Map();
-    for (const player of data.players || []) {
-      if (!app.leaderboardDecorations.isOwnGuild(player, identity)) continue;
-      for (const name of [player.currentName, ...(player.nameAliases || [])]) {
-        const normalized = core.normalizeName(name);
-        if (normalized) names.set(normalized, player);
-      }
-    }
-    return names;
-  }
-
-  function isGuildRosterTable(table) {
-    const firstHeader = app.leaderboardDecorations.normalizedCellText(
-      table?.tHead?.rows?.[0]?.cells?.[0]
-    ).toLowerCase();
-    return /^(成员|members?)(?:\s|\(|（|$)/i.test(firstHeader);
-  }
-
-  function targetCells(table) {
-    if (app.leaderboardDecorations.isLeaderboardTable(table)) {
-      return app.leaderboardDecorations.leaderboardRows(table).map(({ row }) => row.cells[1]);
-    }
-    if (!isGuildRosterTable(table)) return [];
-    return Array.from(table.tBodies || []).flatMap((body) =>
-      Array.from(body.rows || []).map((row) => row.cells?.[0]).filter(Boolean)
+  function leafTextCandidates(node) {
+    const descendants = Array.from(node?.querySelectorAll?.("*") || []);
+    const leaves = descendants.filter((child) =>
+      !child.classList?.contains("mwi-git-guild-marker") && !(child.children?.length > 0)
     );
+    return [node, ...leaves]
+      .map((child) => String(child?.innerText || child?.textContent || "").trim())
+      .filter((text) => text && text.length <= 64 && /[\p{L}\p{N}]/u.test(text) && !/^\d+$/.test(text));
   }
 
-  function exactNameNode(cell, names) {
-    const descendants = Array.from(cell?.querySelectorAll?.("*") || []);
-    for (const node of descendants) {
-      const hasContentChildren = Array.from(node.children || []).some(
-        (child) => !child.classList?.contains("mwi-git-own-guild-badge")
-      );
-      if (hasContentChildren) continue;
-      const player = names.get(core.normalizeName(node.textContent));
-      if (player) return { node, player };
+  function chatCharacterName(node, maps) {
+    const characterNode = node?.querySelector?.(CHARACTER_NAME_SELECTOR);
+    const candidates = leafTextCandidates(characterNode || node);
+    for (const candidate of candidates) {
+      const exact = maps.byName.get(core.normalizeName(candidate));
+      if (exact) return exact.currentName;
     }
-    const player = names.get(core.normalizeName(cell?.textContent));
-    return player ? { node: cell, player } : null;
-  }
-
-  function decorate(data, i18n, identity) {
-    const names = ownGuildNames(data, identity);
-    const used = new Set();
-    for (const table of Array.from(root.document.querySelectorAll("table"))) {
-      if (table.closest?.(".mwi-git-panel")) continue;
-      for (const cell of targetCells(table)) {
-        const match = exactNameNode(cell, names);
-        if (!match) continue;
-        let badge = Array.from(match.node.children || []).find(
-          (node) => node.classList?.contains("mwi-git-own-guild-badge")
-        );
-        if (!badge) {
-          badge = app.dom.element("span", {
-            className: "mwi-git-own-guild-badge",
-            attributes: { role: "img" }
-          });
-          match.node.append(badge);
-        }
-        badge.dataset.playerKey = match.player.playerKey;
-        badge.title = i18n.t("ownGuild");
-        badge.setAttribute("aria-label", i18n.t("ownGuild"));
-        used.add(badge);
+    for (const [normalizedName, player] of maps.byName) {
+      if (candidates.some((candidate) => core.normalizeName(candidate).includes(normalizedName))) {
+        return player.currentName;
       }
     }
-    for (const badge of Array.from(root.document.querySelectorAll(".mwi-git-own-guild-badge"))) {
-      if (!used.has(badge)) badge.remove();
-    }
+    return candidates.sort((left, right) => right.length - left.length)[0] || "";
   }
 
   function clear() {
-    for (const badge of Array.from(root.document.querySelectorAll(".mwi-git-own-guild-badge"))) {
-      badge.remove();
+    for (const marker of Array.from(root.document.querySelectorAll('.mwi-git-guild-marker[data-location="chat"]'))) {
+      marker.remove();
     }
   }
 
-  app.memberDecorations = Object.freeze({
-    ownGuildNames,
-    isGuildRosterTable,
-    targetCells,
-    exactNameNode,
+  function decorate(data, i18n, identity, enabled = true) {
+    if (!enabled) {
+      clear();
+      return;
+    }
+    const maps = app.leaderboardDecorations.summaryMaps(data);
+    const used = new Set();
+    for (const nameNode of Array.from(root.document.querySelectorAll(CHAT_NAME_SELECTOR))) {
+      if (nameNode.closest?.(".mwi-git-panel")) continue;
+      const name = chatCharacterName(nameNode, maps);
+      if (!name) continue;
+      const player = maps.byName.get(core.normalizeName(name)) || null;
+      const observation = player ? maps.observations.get(player.playerKey) : null;
+      const invite = player ? maps.invites.get(player.playerKey) : null;
+      const state = app.leaderboardDecorations.guildMarkerState(player, invite, identity);
+      const title = app.leaderboardDecorations.titleFor(player, observation, invite, identity, i18n);
+      let marker = Array.from(nameNode.children || []).find(
+        (child) => child.classList?.contains("mwi-git-guild-marker") && child.dataset.location === "chat"
+      );
+      if (!marker) marker = app.dom.element("span", {
+        className: "mwi-git-guild-marker mwi-git-guild-marker--chat",
+        attributes: { role: "img" }
+      });
+      marker.dataset.location = "chat";
+      marker.dataset.state = state;
+      marker.title = title;
+      marker.setAttribute("aria-label", `${name}: ${title.replace(/\n/g, ", ")}`);
+      marker.style.setProperty("--mwi-git-marker-size", `${app.leaderboardDecorations.markerSizeForCell(nameNode)}px`);
+      if (nameNode.firstChild !== marker) nameNode.prepend(marker);
+      used.add(marker);
+    }
+    for (const marker of Array.from(root.document.querySelectorAll('.mwi-git-guild-marker[data-location="chat"]'))) {
+      if (!used.has(marker)) marker.remove();
+    }
+  }
+
+  app.chatDecorations = Object.freeze({
+    CHAT_NAME_SELECTOR,
+    CHARACTER_NAME_SELECTOR,
+    leafTextCandidates,
+    chatCharacterName,
     decorate,
     clear
   });
@@ -3248,6 +3216,8 @@
     let data = { players: [], profileObservations: [], inviteEvents: [] };
     let selectedKey = initialView.selectedKey || null;
     let identity = null;
+    let settingsOpen = Boolean(initialView.settingsOpen);
+    let displayPreferences = app.displayPreferences.normalize(initialView.displayPreferences);
     const settings = {
       query: initialView.query || "",
       guildState: initialView.guildState || "all",
@@ -3286,8 +3256,50 @@
     const subtitle = dom.element("p", { className: "mwi-git-subtitle", text: i18n.t("subtitle") });
     titleBlock.append(title, subtitle);
     const local = dom.element("span", { className: "mwi-git-local", text: i18n.t("localOnly") });
+    const settingsButton = dom.element("button", {
+      className: "mwi-git-button mwi-git-settings-button",
+      text: i18n.t("settings"),
+      type: "button",
+      attributes: { "aria-controls": "mwi-git-display-settings", "aria-expanded": String(settingsOpen) }
+    });
     const close = dom.element("button", { className: "mwi-git-icon-button", text: "×", type: "button", title: i18n.t("close"), attributes: { "aria-label": i18n.t("close") } });
-    header.append(titleBlock, local, close);
+    header.append(titleBlock, local, settingsButton, close);
+
+    const displaySettings = dom.element("section", {
+      className: "mwi-git-display-settings",
+      attributes: { id: "mwi-git-display-settings", "aria-label": i18n.t("indicatorLocations") }
+    });
+    const settingsTitle = dom.element("h3", { text: i18n.t("indicatorLocations") });
+
+    function displaySwitch(key, labelKey) {
+      const input = dom.element("input", {
+        className: "mwi-git-switch",
+        type: "checkbox",
+        attributes: { role: "switch", "data-display-location": key }
+      });
+      input.checked = displayPreferences[key];
+      const label = dom.element("label", { className: "mwi-git-switch-row" });
+      label.append(dom.element("span", { text: i18n.t(labelKey) }), input);
+      input.addEventListener("change", () => {
+        displayPreferences = controller.setDisplayPreferences({
+          ...displayPreferences,
+          [key]: input.checked
+        });
+      });
+      return label;
+    }
+
+    displaySettings.append(
+      settingsTitle,
+      displaySwitch("leaderboard", "showOnLeaderboards"),
+      displaySwitch("chat", "showInChat")
+    );
+    displaySettings.hidden = !settingsOpen;
+    settingsButton.addEventListener("click", () => {
+      settingsOpen = !settingsOpen;
+      displaySettings.hidden = !settingsOpen;
+      settingsButton.setAttribute("aria-expanded", String(settingsOpen));
+    });
 
     const toolbar = dom.element("div", { className: "mwi-git-toolbar" });
     const search = dom.element("input", { className: "mwi-git-input", type: "search", attributes: { placeholder: i18n.t("search"), "aria-label": i18n.t("search") } });
@@ -3364,7 +3376,7 @@
     listPane.append(createSectionToggle("players", "players", list), list);
     detailPane.append(createSectionToggle("timeline", "timeline", detailContent), detailContent);
     body.append(listPane, detailPane);
-    shell.append(header, filterSection, actionSection, body);
+    shell.append(header, displaySettings, filterSection, actionSection, body);
     panel.append(shell);
     backdrop.append(panel);
 
@@ -3506,6 +3518,8 @@
       return {
         ...settings,
         selectedKey,
+        settingsOpen,
+        displayPreferences: { ...displayPreferences },
         collapsed: { ...collapsed },
         open: nativeMode ? !panel.hidden : !backdrop.hidden
       };
@@ -3554,9 +3568,11 @@
   let protocolChain = Promise.resolve();
   const queuedActions = [];
   const i18n = app.localization.createI18n();
+  const preferenceStore = app.displayPreferences.createStore(root.localStorage, app.config.settingsKey);
+  let displayPreferences = preferenceStore.load();
   const decorationScheduler = app.scheduler.frameScheduler(() => {
-    app.leaderboardDecorations.decorate(currentData, i18n, identity);
-    app.memberDecorations.decorate(currentData, i18n, identity);
+    app.leaderboardDecorations.decorate(currentData, i18n, identity, displayPreferences.leaderboard);
+    app.chatDecorations.decorate(currentData, i18n, identity, displayPreferences.chat);
   });
 
   async function refresh() {
@@ -3684,6 +3700,11 @@
 
   const controller = {
     refresh,
+    setDisplayPreferences(next) {
+      displayPreferences = preferenceStore.save(next);
+      decorationScheduler.request();
+      return { ...displayPreferences };
+    },
     async exportJson() {
       if (!identity || !namespace) return panel?.toast(i18n.t("waitIdentity"));
       const backup = await app.importExport.createBackup(await repository.snapshot(namespace), identity);
@@ -3738,7 +3759,7 @@
 
   function mount() {
     if (!root.document.body || panel) return;
-    panel = app.panelShell.createPanel(controller, i18n);
+    panel = app.panelShell.createPanel(controller, i18n, { displayPreferences });
     panel.mount();
     panel.setIdentity(identity);
     panel.setData(currentData);
@@ -3778,7 +3799,7 @@
       observer?.disconnect();
       decorationScheduler.destroy();
       app.leaderboardDecorations.clear();
-      app.memberDecorations.clear();
+      app.chatDecorations.clear();
       sidebar?.destroy();
       panel?.destroy();
       await repository.close();
