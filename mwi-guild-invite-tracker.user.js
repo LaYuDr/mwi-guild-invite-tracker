@@ -2,7 +2,7 @@
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
 // @namespace    https://github.com/layu/mwi-guild-invite-tracker
-// @version      0.3.4
+// @version      0.3.7
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
 // @description:en Passively records leaderboard profile views, guild status, and native guild invite outcomes
 // @match        https://www.milkywayidle.com/*
@@ -21,7 +21,7 @@
 
   app.config = Object.freeze({
     appId: "mwi-guild-invite-tracker",
-    version: "0.3.4",
+    version: "0.3.7",
     schemaVersion: 1,
     databaseName: "mwi-guild-invite-tracker",
     databaseVersion: 1,
@@ -401,13 +401,13 @@
   const app = (root.MWIGuildInviteTracker = root.MWIGuildInviteTracker || {});
   const messages = {
     zh: {
-      launcher: "招募档案",
+      launcher: "邀请",
       sidebar: "邀请",
-      title: "招募档案",
-      subtitle: "排行榜查看与公会邀请记录",
+      title: "邀请",
+      subtitle: "招募记录",
       close: "关闭",
-      settings: "设置",
-      indicatorLocations: "状态指示器显示位置",
+      settings: "显示设置",
+      indicatorLocations: "指示器显示",
       showOnLeaderboards: "排行榜",
       showInChat: "聊天室",
       search: "搜索玩家",
@@ -433,13 +433,13 @@
       sortRecentInvite: "最近邀请",
       sortName: "玩家名称",
       sortRank: "最佳排名",
-      exportJson: "导出完整备份",
-      exportCsv: "导出 CSV",
-      importJson: "导入备份",
-      clear: "清空当前角色",
-      deletePlayer: "删除该玩家记录",
+      exportJson: "导出备份",
+      exportCsv: "导出表格",
+      importJson: "导入",
+      clear: "清空记录",
+      deletePlayer: "删除记录",
       filtersSection: "筛选",
-      dataSection: "数据操作",
+      dataSection: "备份与数据",
       expandSection: "展开",
       collapseSection: "折叠",
       players: "候选人",
@@ -447,7 +447,7 @@
       invites: "邀请记录",
       timeline: "时间线",
       emptyPlayers: "还没有记录。先在排行榜打开一名玩家的详细资料。",
-      emptyTimeline: "选择一名玩家查看完整时间线。",
+      emptyTimeline: "选择一名玩家查看记录。",
       viewed: "查看资料",
       inviteAttempt: "提交邀请",
       guildNone: "无公会",
@@ -469,6 +469,10 @@
       unknown_error: "未知错误",
       importTitle: "导入备份",
       importPreview: "导入预览",
+      sourceCharacter: "来源角色",
+      sourceSite: "来源站点",
+      exportedAt: "导出时间",
+      duplicate: "重复",
       merge: "智能合并",
       addOnly: "仅添加新数据",
       replace: "完全替换",
@@ -480,8 +484,8 @@
       invalidBackup: "备份文件格式或数据不正确。",
       confirmClear: "确定清空当前角色的全部招募记录吗？此操作不可撤销。",
       confirmDelete: "确定删除这名玩家及其全部查看和邀请记录吗？",
-      waitIdentity: "等待游戏识别当前角色。首次安装后请刷新游戏页面。",
-      localOnly: "数据仅保存在此浏览器",
+      waitIdentity: "等待识别角色",
+      localOnly: "本地保存",
       language: "切换语言"
     },
     en: {
@@ -629,6 +633,40 @@
     })
   });
 
+  const guildRoleNames = Object.freeze({
+    zh: Object.freeze({
+      leader: "会长",
+      general: "将军",
+      officer: "官员",
+      member: "成员",
+      applicant: "申请者",
+      invited: "已邀请"
+    }),
+    en: Object.freeze({
+      leader: "Leader",
+      general: "General",
+      officer: "Officer",
+      member: "Member",
+      applicant: "Applicant",
+      invited: "Invited"
+    })
+  });
+
+  const leaderboardTypeNames = Object.freeze({
+    zh: Object.freeze({
+      standard: "标准模式",
+      steam_standard: "标准模式",
+      ironman: "铁牛模式",
+      steam_ironman: "铁牛模式"
+    }),
+    en: Object.freeze({
+      standard: "Standard",
+      steam_standard: "Standard",
+      ironman: "Iron Cow",
+      steam_ironman: "Iron Cow"
+    })
+  });
+
   function normalizedLanguage(value) {
     return String(value || "").toLowerCase().startsWith("zh") ? "zh" : "en";
   }
@@ -653,6 +691,12 @@
     return leaderboardCategoryNames[normalizedLanguage(language)][key] || key;
   }
 
+  function mappedName(dictionary, value, language) {
+    const key = String(value || "").trim().toLowerCase();
+    if (!key) return "";
+    return dictionary[normalizedLanguage(language)][key] || String(value);
+  }
+
   function createI18n(initialLanguage) {
     let language = initialLanguage === "zh" || initialLanguage === "en" ? initialLanguage : detectLanguage();
     return {
@@ -667,13 +711,34 @@
       },
       category(hrid) {
         return categoryName(hrid, language);
+      },
+      guildRole(value) {
+        return mappedName(guildRoleNames, value, language);
+      },
+      leaderboardType(value) {
+        return mappedName(leaderboardTypeNames, value, language);
+      },
+      summary(counts) {
+        if (language === "zh") {
+          return `${counts.players} 位候选 · ${counts.observations} 次查看 · ${counts.invites} 次邀请`;
+        }
+        return `${counts.players} candidates · ${counts.observations} views · ${counts.invites} invites`;
+      },
+      duplicateCount(count) {
+        return language === "zh" ? `${messages.zh.duplicate} ${i18nNumber(count)} 条` : `${i18nNumber(count)} duplicate`;
       }
     };
+  }
+
+  function i18nNumber(value) {
+    return Number.isFinite(Number(value)) ? String(Number(value)) : "0";
   }
 
   app.localization = Object.freeze({
     messages,
     leaderboardCategoryNames,
+    guildRoleNames,
+    leaderboardTypeNames,
     normalizedLanguage,
     detectLanguage,
     categoryName,
@@ -2120,13 +2185,13 @@
   const app = (root.MWIGuildInviteTracker = root.MWIGuildInviteTracker || {});
   const css = `
     :root {
-      --mwi-git-space: #0d1420;
-      --mwi-git-panel: #151f2e;
-      --mwi-git-panel-2: #1b2839;
-      --mwi-git-metal: #34465b;
-      --mwi-git-text: #e8edf3;
-      --mwi-git-muted: #97a6b8;
-      --mwi-git-scan: #4cc9c0;
+      --mwi-git-space: #0f1621;
+      --mwi-git-panel: #151e2c;
+      --mwi-git-panel-2: #1b2737;
+      --mwi-git-metal: #314257;
+      --mwi-git-text: #edf1f5;
+      --mwi-git-muted: #9aabc0;
+      --mwi-git-scan: #57d5ca;
       --mwi-git-warning: #e5a94d;
       --mwi-git-error: #e46f61;
       --mwi-git-shield: #7299c7;
@@ -2193,6 +2258,11 @@
       animation: mwi-git-enter 170ms ease-out;
     }
     .mwi-git-panel[hidden] { display: none; }
+    .mwi-git-panel ::selection { color: #081316; background: rgba(87,213,202,.86); }
+    .mwi-git-panel * { scrollbar-width: thin; scrollbar-color: var(--mwi-git-metal) transparent; }
+    .mwi-git-panel *::-webkit-scrollbar { width: 7px; height: 7px; }
+    .mwi-git-panel *::-webkit-scrollbar-thumb { border-radius: 8px; background: var(--mwi-git-metal); }
+    .mwi-git-panel *::-webkit-scrollbar-track { background: transparent; }
     [data-mwi-git-tab="true"] { user-select: none; pointer-events: auto !important; cursor: pointer !important; }
     .mwi-git-panel--native {
       position: relative;
@@ -2216,47 +2286,49 @@
     .mwi-git-header {
       display: flex;
       align-items: center;
-      gap: 14px;
-      padding: 18px 20px 15px;
+      gap: 10px;
+      padding: 11px 14px 10px;
       border-bottom: 1px solid var(--mwi-git-metal);
-      background: linear-gradient(180deg, rgba(52,70,91,.17), transparent);
+      background: linear-gradient(180deg, rgba(49,66,87,.18), rgba(15,22,33,.25));
     }
     .mwi-git-title-block { min-width: 0; flex: 1; }
-    .mwi-git-title { margin: 0; font-size: 20px; line-height: 1.2; letter-spacing: .05em; }
-    .mwi-git-subtitle { margin: 4px 0 0; color: var(--mwi-git-muted); font-size: 12px; }
-    .mwi-git-local { display: inline-flex; align-items: center; gap: 6px; color: var(--mwi-git-muted); font-size: 11px; }
-    .mwi-git-local::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--mwi-git-scan); }
+    .mwi-git-title { margin: 0; font-size: 17px; line-height: 1.2; letter-spacing: .01em; }
+    .mwi-git-header-meta { display: flex; min-width: 0; align-items: center; gap: 6px 10px; margin-top: 4px; color: var(--mwi-git-muted); font-size: 10px; line-height: 1.25; }
+    .mwi-git-local { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 5px; }
+    .mwi-git-local::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--mwi-git-scan); }
+    .mwi-git-identity { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .mwi-git-icon-button,
     .mwi-git-button {
       border: 1px solid var(--mwi-git-metal);
-      border-radius: 6px;
+      border-radius: 5px;
       color: var(--mwi-git-text);
       background: var(--mwi-git-panel-2);
       font: 600 12px/1 inherit;
       cursor: pointer;
     }
-    .mwi-git-icon-button { width: 34px; height: 34px; font-size: 18px; }
-    .mwi-git-button { min-height: 34px; padding: 0 11px; }
-    .mwi-git-button:hover, .mwi-git-icon-button:hover { border-color: var(--mwi-git-scan); }
+    .mwi-git-icon-button { width: 30px; height: 30px; font-size: 17px; }
+    .mwi-git-button { min-height: 30px; padding: 0 9px; }
+    .mwi-git-button:hover, .mwi-git-icon-button:hover { border-color: var(--mwi-git-scan); background: #213044; }
     .mwi-git-button--danger { color: #ffd7d2; border-color: rgba(228,111,97,.55); }
-    .mwi-git-settings-button { min-height: 30px; }
+    .mwi-git-settings-button { min-height: 28px; white-space: nowrap; }
+    .mwi-git-settings-button[aria-expanded="true"] { color: var(--mwi-git-scan); border-color: rgba(87,213,202,.58); }
     .mwi-git-display-settings {
       display: grid;
-      grid-template-columns: minmax(120px, 1fr) repeat(2, minmax(110px, auto));
+      grid-template-columns: minmax(100px, 1fr) repeat(2, minmax(92px, auto));
       align-items: center;
-      gap: 8px 18px;
-      padding: 9px 20px;
+      gap: 6px 14px;
+      padding: 7px 14px;
       border-bottom: 1px solid rgba(52,70,91,.72);
       background: var(--mwi-git-panel);
     }
     .mwi-git-display-settings[hidden] { display: none; }
     .mwi-git-display-settings h3 { margin: 0; color: var(--mwi-git-muted); font-size: 12px; }
-    .mwi-git-switch-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12px; cursor: pointer; }
+    .mwi-git-switch-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; cursor: pointer; }
     .mwi-git-switch {
       position: relative;
       box-sizing: border-box;
-      width: 32px;
-      height: 18px;
+      width: 30px;
+      height: 17px;
       flex: 0 0 auto;
       margin: 0;
       border: 1px solid var(--mwi-git-metal);
@@ -2271,30 +2343,30 @@
       position: absolute;
       top: 3px;
       left: 3px;
-      width: 10px;
-      height: 10px;
+      width: 9px;
+      height: 9px;
       border-radius: 50%;
       background: var(--mwi-git-muted);
       transition: transform 140ms ease, background 140ms ease;
     }
     .mwi-git-switch:checked { border-color: var(--mwi-git-scan); background: rgba(76,201,192,.18); }
-    .mwi-git-switch:checked::after { background: var(--mwi-git-scan); transform: translateX(14px); }
+    .mwi-git-switch:checked::after { background: var(--mwi-git-scan); transform: translateX(13px); }
     .mwi-git-collapsible { min-width: 0; background: var(--mwi-git-panel); }
     .mwi-git-section-toggle {
       box-sizing: border-box;
       width: 100%;
-      min-height: 30px;
+      min-height: 27px;
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 12px;
-      padding: 7px 14px;
+      padding: 6px 12px;
       border: 0;
       border-bottom: 1px solid rgba(52,70,91,.7);
       color: var(--mwi-git-muted);
       background: rgba(13,20,32,.96);
-      font: 700 10px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
-      letter-spacing: .1em;
+      font: 650 11px/1.3 inherit;
+      letter-spacing: .04em;
       text-align: left;
       cursor: pointer;
     }
@@ -2315,25 +2387,26 @@
     .mwi-git-detail-pane > [hidden] { display: none !important; }
     .mwi-git-toolbar {
       display: grid;
-      grid-template-columns: minmax(180px, 1.35fr) repeat(3, minmax(120px, .8fr));
-      gap: 8px;
-      padding: 12px 20px;
+      grid-template-columns: minmax(170px, 1.35fr) repeat(3, minmax(112px, .8fr));
+      gap: 6px;
+      padding: 8px 14px;
       border-bottom: 1px solid rgba(52,70,91,.72);
       background: var(--mwi-git-panel);
     }
     .mwi-git-input,
     .mwi-git-select {
       min-width: 0;
-      height: 34px;
-      padding: 0 10px;
+      height: 31px;
+      padding: 0 9px;
       border: 1px solid var(--mwi-git-metal);
-      border-radius: 6px;
+      border-radius: 5px;
       color: var(--mwi-git-text);
       background: #101a28;
-      font: 13px/1 inherit;
+      font: 12px/1 inherit;
     }
-    .mwi-git-actions { display: flex; flex-wrap: wrap; gap: 7px; padding: 10px 20px; border-bottom: 1px solid rgba(52,70,91,.72); }
-    .mwi-git-summary { margin-left: auto; display: flex; align-items: center; gap: 12px; color: var(--mwi-git-muted); font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .mwi-git-input::placeholder { color: #8394aa; }
+    .mwi-git-actions { display: flex; flex-wrap: wrap; gap: 6px; padding: 7px 14px; border-bottom: 1px solid rgba(49,66,87,.72); }
+    .mwi-git-summary { min-width: 0; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
     .mwi-git-body { min-height: 0; display: grid; grid-template-columns: minmax(280px, 39%) 1fr; }
     .mwi-git-list-pane, .mwi-git-detail-pane { min-height: 0; overflow: auto; }
     .mwi-git-list-pane { border-right: 1px solid var(--mwi-git-metal); background: rgba(21,31,46,.75); }
@@ -2349,10 +2422,10 @@
     .mwi-git-player {
       width: 100%;
       display: grid;
-      grid-template-columns: 9px minmax(0, 1fr) auto;
-      gap: 10px;
+      grid-template-columns: 8px minmax(0, 1fr) auto;
+      gap: 8px;
       align-items: center;
-      padding: 12px 14px;
+      padding: 8px 12px;
       border: 0;
       border-bottom: 1px solid rgba(52,70,91,.45);
       color: inherit;
@@ -2361,28 +2434,29 @@
       cursor: pointer;
     }
     .mwi-git-player:hover { background: rgba(76,201,192,.055); }
-    .mwi-git-player[aria-selected="true"] { background: rgba(76,201,192,.11); box-shadow: inset 2px 0 var(--mwi-git-scan); }
-    .mwi-git-player-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--mwi-git-muted); }
+    .mwi-git-player[aria-selected="true"] { background: rgba(87,213,202,.10); box-shadow: inset 2px 0 var(--mwi-git-scan); }
+    .mwi-git-player-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--mwi-git-muted); }
     [data-status="no_guild"] .mwi-git-player-dot { background: var(--mwi-git-scan); box-shadow: 0 0 9px rgba(76,201,192,.5); }
     [data-status="has_guild"] .mwi-git-player-dot { background: var(--mwi-git-shield); }
     [data-status="invited"] .mwi-git-player-dot { background: var(--mwi-git-warning); }
     [data-status="invite_failed"] .mwi-git-player-dot { background: var(--mwi-git-error); }
     [data-status="stale"] .mwi-git-player-dot { opacity: .42; }
-    .mwi-git-player-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; font-size: 13px; }
-    .mwi-git-player-meta { display: block; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--mwi-git-muted); font-size: 11px; }
-    .mwi-git-player-time { color: var(--mwi-git-muted); font: 10px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; }
-    .mwi-git-empty { padding: 34px 24px; color: var(--mwi-git-muted); font-size: 13px; line-height: 1.7; text-align: center; }
-    .mwi-git-detail-head { display: flex; gap: 14px; align-items: center; padding: 17px 20px; border-bottom: 1px solid rgba(52,70,91,.7); }
-    .mwi-git-detail-head h3 { min-width: 0; flex: 1; margin: 0; overflow: hidden; text-overflow: ellipsis; font-size: 18px; }
-    .mwi-git-detail-guild { margin-top: 4px; color: var(--mwi-git-muted); font-size: 12px; }
-    .mwi-git-timeline { position: relative; margin: 0; padding: 17px 20px 34px 43px; list-style: none; }
-    .mwi-git-timeline::before { content: ""; position: absolute; top: 20px; bottom: 20px; left: 25px; width: 1px; background: linear-gradient(var(--mwi-git-scan), rgba(76,201,192,.12)); box-shadow: 0 0 9px rgba(76,201,192,.28); }
-    .mwi-git-event { position: relative; margin: 0 0 14px; padding: 12px 14px; border: 1px solid rgba(52,70,91,.78); border-radius: 7px; background: var(--mwi-git-panel); }
-    .mwi-git-event::before { content: ""; position: absolute; left: -23px; top: 16px; width: 7px; height: 7px; border: 2px solid var(--mwi-git-space); border-radius: 50%; background: var(--mwi-git-scan); box-shadow: 0 0 0 1px var(--mwi-git-scan); }
+    .mwi-git-player-copy { min-width: 0; }
+    .mwi-git-player-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; font-size: 12px; }
+    .mwi-git-player-meta { display: block; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--mwi-git-muted); font-size: 10px; }
+    .mwi-git-player-time { color: var(--mwi-git-muted); font: 10px/1.25 ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; }
+    .mwi-git-empty { padding: 24px 18px; color: var(--mwi-git-muted); font-size: 12px; line-height: 1.6; text-align: center; }
+    .mwi-git-detail-head { display: flex; gap: 10px; align-items: center; padding: 10px 14px; border-bottom: 1px solid rgba(49,66,87,.7); }
+    .mwi-git-detail-head h3 { min-width: 0; flex: 1; margin: 0; overflow: hidden; text-overflow: ellipsis; font-size: 15px; }
+    .mwi-git-detail-guild { margin-top: 2px; color: var(--mwi-git-muted); font-size: 10px; }
+    .mwi-git-timeline { position: relative; margin: 0; padding: 8px 14px 20px 33px; list-style: none; }
+    .mwi-git-timeline::before { content: ""; position: absolute; top: 11px; bottom: 15px; left: 19px; width: 1px; background: linear-gradient(var(--mwi-git-scan), rgba(87,213,202,.10)); }
+    .mwi-git-event { position: relative; margin: 0; padding: 8px 0 9px; border-bottom: 1px solid rgba(49,66,87,.45); }
+    .mwi-git-event::before { content: ""; position: absolute; left: -17px; top: 13px; width: 6px; height: 6px; border: 2px solid var(--mwi-git-space); border-radius: 50%; background: var(--mwi-git-scan); box-shadow: 0 0 0 1px var(--mwi-git-scan); }
     .mwi-git-event--invite::before { background: var(--mwi-git-warning); box-shadow: 0 0 0 1px var(--mwi-git-warning); }
-    .mwi-git-event-title { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; font-weight: 700; }
+    .mwi-git-event-title { display: flex; justify-content: space-between; gap: 10px; font-size: 11px; font-weight: 700; }
     .mwi-git-event-time { color: var(--mwi-git-muted); font: 10px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
-    .mwi-git-event-detail { margin-top: 7px; color: var(--mwi-git-muted); font-size: 11px; line-height: 1.55; }
+    .mwi-git-event-detail { margin-top: 3px; color: var(--mwi-git-muted); font-size: 10px; line-height: 1.45; }
     .mwi-git-guild-marker {
       --mwi-git-marker-size: 1.2em;
       position: relative;
@@ -2430,58 +2504,57 @@
       cursor: help;
     }
     .mwi-git-dialog-backdrop { position: fixed; inset: 0; z-index: 2147483010; display: grid; place-items: center; padding: 18px; background: rgba(5,9,15,.76); }
-    .mwi-git-dialog { width: min(520px, 100%); max-height: 85vh; overflow: auto; padding: 20px; border: 1px solid var(--mwi-git-metal); border-radius: 9px; color: var(--mwi-git-text); background: var(--mwi-git-panel); box-shadow: 0 24px 70px var(--mwi-git-shadow); }
-    .mwi-git-dialog h2 { margin: 0 0 14px; font-size: 18px; }
-    .mwi-git-preview { display: grid; grid-template-columns: 1fr auto; gap: 7px 14px; margin: 14px 0; padding: 12px; background: var(--mwi-git-space); border: 1px solid rgba(52,70,91,.7); border-radius: 6px; font-size: 12px; }
+    .mwi-git-dialog { width: min(500px, 100%); max-height: 85vh; overflow: auto; padding: 16px; border: 1px solid var(--mwi-git-metal); border-radius: 8px; color: var(--mwi-git-text); background: var(--mwi-git-panel); box-shadow: 0 24px 70px var(--mwi-git-shadow); }
+    .mwi-git-dialog h2 { margin: 0 0 10px; font-size: 16px; }
+    .mwi-git-preview { display: grid; grid-template-columns: minmax(80px, auto) minmax(0, 1fr); gap: 6px 14px; margin: 10px 0; padding: 10px 0; border-block: 1px solid rgba(49,66,87,.7); font-size: 11px; }
+    .mwi-git-preview > :nth-child(odd) { color: var(--mwi-git-muted); font-weight: 500; }
+    .mwi-git-preview > :nth-child(even) { overflow-wrap: anywhere; text-align: right; }
     .mwi-git-warning { color: #ffd99c; font-size: 12px; line-height: 1.5; }
-    .mwi-git-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+    .mwi-git-dialog-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 14px; }
     .mwi-git-toast { position: fixed; right: 18px; bottom: 124px; z-index: 2147483020; max-width: min(420px, calc(100vw - 36px)); padding: 11px 14px; border: 1px solid var(--mwi-git-metal); border-radius: 7px; color: var(--mwi-git-text); background: var(--mwi-git-panel-2); box-shadow: 0 14px 36px var(--mwi-git-shadow); font-size: 12px; }
-    .mwi-git-panel--native .mwi-git-header { gap: 8px; padding: 11px 10px 9px; }
-    .mwi-git-panel--native .mwi-git-title { font-size: 16px; letter-spacing: .02em; }
-    .mwi-git-panel--native .mwi-git-subtitle { margin-top: 2px; font-size: 10px; }
+    .mwi-git-panel--native .mwi-git-header { gap: 7px; padding: 8px 10px 7px; }
+    .mwi-git-panel--native .mwi-git-title { font-size: 15px; }
+    .mwi-git-panel--native .mwi-git-header-meta { gap: 5px 8px; margin-top: 3px; font-size: 10px; }
     .mwi-git-panel--native .mwi-git-icon-button { width: 30px; min-width: 30px; height: 30px; }
     .mwi-git-panel--native .mwi-git-toolbar {
       grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 6px;
-      padding: 8px 10px;
+      gap: 5px;
+      padding: 6px 10px;
     }
     .mwi-git-panel--native .mwi-git-toolbar > :first-child { grid-column: 1 / -1; }
-    .mwi-git-panel--native .mwi-git-toolbar .mwi-git-local { grid-column: 1 / -1; }
     .mwi-git-panel--native .mwi-git-input,
-    .mwi-git-panel--native .mwi-git-select { height: 32px; padding-inline: 8px; font-size: 11px; }
-    .mwi-git-panel--native .mwi-git-actions { gap: 6px; padding: 8px 10px; }
-    .mwi-git-panel--native .mwi-git-display-settings { grid-template-columns: 1fr; gap: 7px; padding: 8px 10px; }
-    .mwi-git-panel--native .mwi-git-switch-row { min-height: 28px; }
-    .mwi-git-panel--native .mwi-git-section-toggle { min-height: 28px; padding: 6px 10px; }
-    .mwi-git-panel--native .mwi-git-button { min-height: 32px; padding-inline: 8px; font-size: 10px; }
-    .mwi-git-panel--native .mwi-git-summary { width: 100%; margin: 2px 0 0; }
+    .mwi-git-panel--native .mwi-git-select { height: 29px; padding-inline: 7px; font-size: 10px; }
+    .mwi-git-panel--native .mwi-git-actions { gap: 5px; padding: 6px 10px; }
+    .mwi-git-panel--native .mwi-git-display-settings { grid-template-columns: 1fr auto auto; gap: 6px 10px; padding: 6px 10px; }
+    .mwi-git-panel--native .mwi-git-switch-row { min-height: 24px; }
+    .mwi-git-panel--native .mwi-git-section-toggle { min-height: 25px; padding: 5px 10px; }
+    .mwi-git-panel--native .mwi-git-button { min-height: 28px; padding-inline: 7px; font-size: 10px; }
     .mwi-git-panel--native .mwi-git-body {
       grid-template-columns: 1fr;
-      grid-template-rows: minmax(190px, 42%) minmax(0, 1fr);
+      grid-template-rows: minmax(160px, 38%) minmax(0, 1fr);
     }
     .mwi-git-panel--native .mwi-git-body[data-players-collapsed="true"] { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
     .mwi-git-panel--native .mwi-git-body[data-timeline-collapsed="true"] { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; }
     .mwi-git-panel--native .mwi-git-body[data-players-collapsed="true"][data-timeline-collapsed="true"] { grid-template-rows: auto auto; }
     .mwi-git-panel--native .mwi-git-list-pane { border-right: 0; border-bottom: 1px solid var(--mwi-git-metal); }
-    .mwi-git-panel--native .mwi-git-player { padding: 10px; }
-    .mwi-git-panel--native .mwi-git-detail-head { padding: 12px 10px; }
-    .mwi-git-panel--native .mwi-git-detail-head h3 { font-size: 15px; }
-    .mwi-git-panel--native .mwi-git-timeline { padding: 13px 10px 28px 35px; }
-    .mwi-git-panel--native .mwi-git-timeline::before { left: 20px; }
-    .mwi-git-panel--native .mwi-git-event::before { left: -19px; }
+    .mwi-git-panel--native .mwi-git-player { padding: 7px 10px; }
+    .mwi-git-panel--native .mwi-git-detail-head { padding: 8px 10px; }
+    .mwi-git-panel--native .mwi-git-detail-head h3 { font-size: 14px; }
+    .mwi-git-panel--native .mwi-git-timeline { padding: 6px 10px 18px 31px; }
+    .mwi-git-panel--native .mwi-git-timeline::before { left: 18px; }
+    .mwi-git-panel--native .mwi-git-event::before { left: -16px; }
     @container (max-width: 350px) {
       .mwi-git-panel--native .mwi-git-toolbar { grid-template-columns: 1fr; }
       .mwi-git-panel--native .mwi-git-toolbar > *,
       .mwi-git-panel--native .mwi-git-toolbar > :first-child,
-      .mwi-git-panel--native .mwi-git-toolbar .mwi-git-local { grid-column: 1; }
       .mwi-git-panel--native .mwi-git-local { display: none; }
-      .mwi-git-panel--native .mwi-git-header { align-items: flex-start; }
-      .mwi-git-panel--native .mwi-git-subtitle { display: none; }
+      .mwi-git-panel--native .mwi-git-summary { display: none; }
+      .mwi-git-panel--native .mwi-git-display-settings { grid-template-columns: 1fr; }
     }
     @media (max-width: 760px) {
       .mwi-git-panel:not(.mwi-git-panel--native) { width: 100vw; }
       .mwi-git-toolbar { grid-template-columns: 1fr 1fr; }
-      .mwi-git-body { grid-template-columns: 1fr; grid-template-rows: minmax(210px, 42%) minmax(0, 1fr); }
+      .mwi-git-body { grid-template-columns: 1fr; grid-template-rows: minmax(170px, 38%) minmax(0, 1fr); }
       .mwi-git-body[data-players-collapsed="true"] { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
       .mwi-git-body[data-timeline-collapsed="true"] { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; }
       .mwi-git-body[data-players-collapsed="true"][data-timeline-collapsed="true"] { grid-template-rows: auto auto; }
@@ -2634,7 +2707,6 @@
     let hiddenNodes = [];
     let observer = null;
     let scheduled = 0;
-    let fallbackTimer = 0;
     let tabBarClickHandler = null;
     let tabBarPointerHandler = null;
     let active = false;
@@ -2756,12 +2828,7 @@
       if (destroyed || scheduled) return;
       scheduled = root.setTimeout(() => {
         scheduled = 0;
-        if (!ensure() && !fallbackTimer) {
-          fallbackTimer = root.setTimeout(() => {
-            fallbackTimer = 0;
-            if (!ensure()) panel.enableFallback();
-          }, 1200);
-        }
+        ensure();
       }, 75);
     }
 
@@ -2789,7 +2856,6 @@
     function destroy() {
       destroyed = true;
       if (scheduled) root.clearTimeout(scheduled);
-      if (fallbackTimer) root.clearTimeout(fallbackTimer);
       observer?.disconnect();
       observer = null;
       activationCoordinator.destroy();
@@ -3240,12 +3306,12 @@
       const title = dom.element("h2", { text: i18n.t("importPreview"), attributes: { id: "mwi-git-import-title" } });
       const grid = dom.element("div", { className: "mwi-git-preview" });
       const fields = [
-        ["Character", `${preview.source.characterName} (#${preview.source.characterId ?? "?"})`],
-        ["Site", preview.source.hostname],
-        ["Exported", dom.formatDate(preview.exportedAt, i18n.language)],
-        [i18n.t("players"), `${preview.counts.players} (${preview.duplicates.players} duplicate)`],
-        [i18n.t("observations"), `${preview.counts.profileObservations} (${preview.duplicates.profileObservations} duplicate)`],
-        [i18n.t("invites"), `${preview.counts.inviteEvents} (${preview.duplicates.inviteEvents} duplicate)`]
+        [i18n.t("sourceCharacter"), `${preview.source.characterName}（#${preview.source.characterId ?? "?"}）`],
+        [i18n.t("sourceSite"), preview.source.hostname],
+        [i18n.t("exportedAt"), dom.formatDate(preview.exportedAt, i18n.language)],
+        [i18n.t("players"), `${preview.counts.players}（${i18n.duplicateCount(preview.duplicates.players)}）`],
+        [i18n.t("observations"), `${preview.counts.profileObservations}（${i18n.duplicateCount(preview.duplicates.profileObservations)}）`],
+        [i18n.t("invites"), `${preview.counts.inviteEvents}（${i18n.duplicateCount(preview.duplicates.inviteEvents)}）`]
       ];
       for (const [label, value] of fields) {
         grid.append(dom.element("span", { text: label }), dom.element("strong", { text: value }));
@@ -3309,7 +3375,7 @@
 
   function guildLabel(player, i18n) {
     if (player.latestGuild?.state === "joined") {
-      return [player.latestGuild.guildName, player.latestGuild.guildRole].filter(Boolean).join(" · ") || i18n.t("hasGuild");
+      return [player.latestGuild.guildName, i18n.guildRole(player.latestGuild.guildRole)].filter(Boolean).join(" · ") || i18n.t("hasGuild");
     }
     if (player.latestGuild?.state === "none") {
       return `${i18n.t("guildNone")} · ${dom.formatDate(player.latestGuild.observedAt, i18n.language)}`;
@@ -3337,7 +3403,7 @@
         }
       });
       const dot = dom.element("span", { className: "mwi-git-player-dot", attributes: { "aria-hidden": "true" } });
-      const copy = dom.element("span");
+      const copy = dom.element("span", { className: "mwi-git-player-copy" });
       copy.append(
         dom.element("span", { className: "mwi-git-player-name", text: player.currentName }),
         dom.element("span", { className: "mwi-git-player-meta", text: guildLabel(player, i18n) })
@@ -3356,11 +3422,11 @@
   function observationDetail(event, i18n) {
     const details = [];
     if (event.leaderboard) {
-      details.push(`${event.leaderboard.typeHrid || "?"} / ${i18n.category(event.leaderboard.categoryHrid)}`);
+      details.push([i18n.leaderboardType(event.leaderboard.typeHrid), i18n.category(event.leaderboard.categoryHrid)].filter(Boolean).join(" · "));
       details.push(`${i18n.t("rank")} ${event.leaderboard.rank ?? "—"}`);
     }
     const guild = event.guildSnapshot;
-    details.push(guild?.state === "joined" ? [guild.guildName, guild.guildRole].filter(Boolean).join(" · ") : i18n.t("guildNone"));
+    details.push(guild?.state === "joined" ? [guild.guildName, i18n.guildRole(guild.guildRole)].filter(Boolean).join(" · ") : i18n.t("guildNone"));
     return details.filter(Boolean).join(" · ");
   }
 
@@ -3401,7 +3467,7 @@
         dom.element("time", { className: "mwi-git-event-time", text: dom.formatDate(event.timelineAt, i18n.language) })
       );
       const detail = invite
-        ? `${i18n.t("outcome")}: ${i18n.t(event.outcome)}${event.errorKey ? ` · ${event.errorKey}` : ""}`
+        ? `${i18n.t("outcome")}：${i18n.t(event.outcome)}`
         : observationDetail(event, i18n);
       item.append(eventTitle, dom.element("div", { className: "mwi-git-event-detail", text: detail }));
       list.append(item);
@@ -3435,11 +3501,12 @@
       sort: initialView.sort || "lastViewedAt",
       direction: initialView.direction === "asc" ? "asc" : "desc"
     };
+    const initialCollapsed = initialView.collapsed || {};
     const collapsed = {
-      filters: Boolean(initialView.collapsed?.filters),
-      actions: Boolean(initialView.collapsed?.actions),
-      players: Boolean(initialView.collapsed?.players),
-      timeline: Boolean(initialView.collapsed?.timeline)
+      filters: Object.hasOwn(initialCollapsed, "filters") ? Boolean(initialCollapsed.filters) : true,
+      actions: Object.hasOwn(initialCollapsed, "actions") ? Boolean(initialCollapsed.actions) : true,
+      players: Boolean(initialCollapsed.players),
+      timeline: Boolean(initialCollapsed.timeline)
     };
 
     app.styles.installStyles();
@@ -3461,16 +3528,19 @@
     const header = dom.element("header", { className: "mwi-git-header" });
     const titleBlock = dom.element("div", { className: "mwi-git-title-block" });
     const title = dom.element("h2", { className: "mwi-git-title", text: i18n.t("title"), attributes: { id: "mwi-git-title" } });
-    const subtitle = dom.element("p", { className: "mwi-git-subtitle", text: i18n.t("subtitle") });
-    titleBlock.append(title, subtitle);
+    const headerMeta = dom.element("div", { className: "mwi-git-header-meta" });
     const local = dom.element("span", { className: "mwi-git-local", text: i18n.t("localOnly") });
+    const identityLabel = dom.element("span", { className: "mwi-git-identity", text: i18n.t("waitIdentity") });
+    const summary = dom.element("span", { className: "mwi-git-summary" });
+    headerMeta.append(local, identityLabel, summary);
+    titleBlock.append(title, headerMeta);
     const settingsButton = dom.element("button", {
       className: "mwi-git-button mwi-git-settings-button",
       text: i18n.t("settings"),
       type: "button",
       attributes: { "aria-controls": "mwi-git-display-settings", "aria-expanded": String(settingsOpen) }
     });
-    const close = dom.element("button", { className: "mwi-git-icon-button", text: "×", type: "button", title: i18n.t("close"), attributes: { "aria-label": i18n.t("close") } });
+    const close = dom.element("button", { className: "mwi-git-icon-button mwi-git-close-button", text: "×", type: "button", title: i18n.t("close"), attributes: { "aria-label": i18n.t("close") } });
     header.append(titleBlock, local, settingsButton, close);
 
     const displaySettings = dom.element("section", {
@@ -3534,8 +3604,7 @@
     inviteOutcome.value = settings.inviteOutcome;
     days.value = settings.days;
     sort.value = settings.sort;
-    const identityLabel = dom.element("span", { className: "mwi-git-local", text: i18n.t("waitIdentity") });
-    toolbar.append(search, guildState, category, inviteOutcome, days, sort, identityLabel);
+    toolbar.append(search, guildState, category, inviteOutcome, days, sort);
 
     const actions = dom.element("div", { className: "mwi-git-actions" });
     const exportJson = dom.element("button", { className: "mwi-git-button", text: i18n.t("exportJson"), type: "button" });
@@ -3543,8 +3612,7 @@
     const importJson = dom.element("button", { className: "mwi-git-button", text: i18n.t("importJson"), type: "button" });
     const clear = dom.element("button", { className: "mwi-git-button mwi-git-button--danger", text: i18n.t("clear"), type: "button" });
     const file = dom.element("input", { type: "file", attributes: { accept: "application/json,.json", hidden: "" } });
-    const summary = dom.element("span", { className: "mwi-git-summary" });
-    actions.append(exportJson, exportCsv, importJson, clear, file, summary);
+    actions.append(exportJson, exportCsv, importJson, clear, file);
 
     const filterSection = dom.element("section", { className: "mwi-git-collapsible" });
     const actionSection = dom.element("section", { className: "mwi-git-collapsible" });
@@ -3617,9 +3685,13 @@
         selectedKey = null;
         await controller.refresh();
       });
-      summary.textContent = `${i18n.t("players")} ${data.players.length} · ${i18n.t("observations")} ${data.profileObservations.length} · ${i18n.t("invites")} ${data.inviteEvents.length}`;
+      summary.textContent = i18n.summary({
+        players: data.players.length,
+        observations: data.profileObservations.length,
+        invites: data.inviteEvents.length
+      });
       identityLabel.textContent = identity
-        ? `${identity.characterName} · ${identity.hostname}`
+        ? identity.characterName
         : i18n.t("waitIdentity");
     }
 
@@ -3683,6 +3755,7 @@
     function mountNative(host, onRequestHide) {
       nativeMode = true;
       nativeHideHandler = typeof onRequestHide === "function" ? onRequestHide : null;
+      close.remove();
       launcher.hidden = true;
       backdrop.hidden = true;
       panel.hidden = true;
@@ -3695,6 +3768,7 @@
       if (!nativeMode) return;
       nativeMode = false;
       nativeHideHandler = null;
+      header.append(close);
       panel.hidden = false;
       panel.classList.remove("mwi-git-panel--native");
       panel.setAttribute("role", "dialog");
