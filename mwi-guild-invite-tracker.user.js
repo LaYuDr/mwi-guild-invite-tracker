@@ -2,7 +2,7 @@
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
 // @namespace    https://github.com/layu/mwi-guild-invite-tracker
-// @version      0.1.0
+// @version      0.2.0
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
 // @description:en Passively records leaderboard profile views, guild status, and native guild invite outcomes
 // @match        https://www.milkywayidle.com/*
@@ -377,6 +377,7 @@
   const messages = {
     zh: {
       launcher: "招募档案",
+      sidebar: "邀请助手",
       title: "招募档案",
       subtitle: "排行榜查看与公会邀请记录",
       close: "关闭",
@@ -448,6 +449,7 @@
     },
     en: {
       launcher: "Recruitment archive",
+      sidebar: "Recruiting",
       title: "Recruitment archive",
       subtitle: "Leaderboard views and guild invitations",
       close: "Close",
@@ -1897,6 +1899,7 @@
       letter-spacing: .03em;
       cursor: pointer;
     }
+    #mwi-git-launcher[hidden] { display: none; }
     #mwi-git-launcher::before {
       content: "";
       width: 9px;
@@ -1936,6 +1939,25 @@
       font-family: inherit;
       overflow: hidden;
       animation: mwi-git-enter 170ms ease-out;
+    }
+    .mwi-git-panel[hidden] { display: none; }
+    [data-mwi-git-tab="true"] { user-select: none; pointer-events: auto !important; cursor: pointer !important; }
+    .mwi-git-panel--native {
+      position: relative;
+      z-index: 0;
+      box-sizing: border-box;
+      flex: 1;
+      width: 100%;
+      min-width: 0;
+      min-height: 0;
+      height: 100%;
+      margin: 0;
+      border: 0;
+      background: transparent;
+      box-shadow: none;
+      overflow: hidden;
+      animation: none;
+      container-type: inline-size;
     }
     @keyframes mwi-git-enter { from { transform: translateX(18px); opacity: .7; } }
     .mwi-git-shell { height: 100%; display: grid; grid-template-rows: auto auto auto minmax(0, 1fr); }
@@ -2040,8 +2062,44 @@
     .mwi-git-warning { color: #ffd99c; font-size: 12px; line-height: 1.5; }
     .mwi-git-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
     .mwi-git-toast { position: fixed; right: 18px; bottom: 124px; z-index: 2147483020; max-width: min(420px, calc(100vw - 36px)); padding: 11px 14px; border: 1px solid var(--mwi-git-metal); border-radius: 7px; color: var(--mwi-git-text); background: var(--mwi-git-panel-2); box-shadow: 0 14px 36px var(--mwi-git-shadow); font-size: 12px; }
+    .mwi-git-panel--native .mwi-git-header { gap: 8px; padding: 11px 10px 9px; }
+    .mwi-git-panel--native .mwi-git-title { font-size: 16px; letter-spacing: .02em; }
+    .mwi-git-panel--native .mwi-git-subtitle { margin-top: 2px; font-size: 10px; }
+    .mwi-git-panel--native .mwi-git-icon-button { width: 30px; min-width: 30px; height: 30px; }
+    .mwi-git-panel--native .mwi-git-toolbar {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px;
+      padding: 8px 10px;
+    }
+    .mwi-git-panel--native .mwi-git-toolbar > :first-child { grid-column: 1 / -1; }
+    .mwi-git-panel--native .mwi-git-toolbar .mwi-git-local { grid-column: 1 / -1; }
+    .mwi-git-panel--native .mwi-git-input,
+    .mwi-git-panel--native .mwi-git-select { height: 32px; padding-inline: 8px; font-size: 11px; }
+    .mwi-git-panel--native .mwi-git-actions { gap: 6px; padding: 8px 10px; }
+    .mwi-git-panel--native .mwi-git-button { min-height: 32px; padding-inline: 8px; font-size: 10px; }
+    .mwi-git-panel--native .mwi-git-summary { width: 100%; margin: 2px 0 0; }
+    .mwi-git-panel--native .mwi-git-body {
+      grid-template-columns: 1fr;
+      grid-template-rows: minmax(190px, 42%) minmax(0, 1fr);
+    }
+    .mwi-git-panel--native .mwi-git-list-pane { border-right: 0; border-bottom: 1px solid var(--mwi-git-metal); }
+    .mwi-git-panel--native .mwi-git-player { padding: 10px; }
+    .mwi-git-panel--native .mwi-git-detail-head { padding: 12px 10px; }
+    .mwi-git-panel--native .mwi-git-detail-head h3 { font-size: 15px; }
+    .mwi-git-panel--native .mwi-git-timeline { padding: 13px 10px 28px 35px; }
+    .mwi-git-panel--native .mwi-git-timeline::before { left: 20px; }
+    .mwi-git-panel--native .mwi-git-event::before { left: -19px; }
+    @container (max-width: 350px) {
+      .mwi-git-panel--native .mwi-git-toolbar { grid-template-columns: 1fr; }
+      .mwi-git-panel--native .mwi-git-toolbar > *,
+      .mwi-git-panel--native .mwi-git-toolbar > :first-child,
+      .mwi-git-panel--native .mwi-git-toolbar .mwi-git-local { grid-column: 1; }
+      .mwi-git-panel--native .mwi-git-local { display: none; }
+      .mwi-git-panel--native .mwi-git-header { align-items: flex-start; }
+      .mwi-git-panel--native .mwi-git-subtitle { display: none; }
+    }
     @media (max-width: 760px) {
-      .mwi-git-panel { width: 100vw; }
+      .mwi-git-panel:not(.mwi-git-panel--native) { width: 100vw; }
       .mwi-git-toolbar { grid-template-columns: 1fr 1fr; }
       .mwi-git-body { grid-template-columns: 1fr; grid-template-rows: minmax(210px, 42%) minmax(0, 1fr); }
       .mwi-git-list-pane { border-right: 0; border-bottom: 1px solid var(--mwi-git-metal); }
@@ -2069,6 +2127,242 @@
   }
 
   app.styles = Object.freeze({ css, installStyles });
+})(globalThis);
+
+// ---- src/ui/sidebar-integration.js ----
+(function initSidebarIntegration(root) {
+  "use strict";
+
+  const app = (root.MWIGuildInviteTracker = root.MWIGuildInviteTracker || {});
+  const SIDEBAR_LABELS = Object.freeze({
+    zh: Object.freeze(["库存", "装备", "技能", "房屋", "配装", "收获"]),
+    en: Object.freeze(["Inventory", "Equipment", "Skills", "House", "Loadout", "Loadouts", "Harvest", "Gathering"])
+  });
+  const EXPECTED_LABELS = new Set([...SIDEBAR_LABELS.zh, ...SIDEBAR_LABELS.en]);
+
+  function normalizedLabel(element) {
+    return String(element?.innerText || element?.textContent || "")
+      .replaceAll("\n", "")
+      .trim();
+  }
+
+  function sidebarLocale(labels) {
+    const counts = { zh: 0, en: 0 };
+    for (const label of Array.isArray(labels) ? labels : []) {
+      if (SIDEBAR_LABELS.zh.includes(label)) counts.zh += 1;
+      else if (SIDEBAR_LABELS.en.includes(label)) counts.en += 1;
+    }
+    if (counts.zh === counts.en) return null;
+    return counts.zh > counts.en ? "zh" : "en";
+  }
+
+  function findSidebarIntegration(documentRef, preferredLanguage) {
+    if (!documentRef || typeof documentRef.getElementsByTagName !== "function") return null;
+    let best = null;
+    for (const candidate of Array.from(documentRef.getElementsByTagName("*"))) {
+      const children = Array.from(candidate.children || []);
+      if (children.length < 4) continue;
+      const recognized = children
+        .map((element) => ({ element, label: normalizedLabel(element) }))
+        .filter((tab) => EXPECTED_LABELS.has(tab.label));
+      if (recognized.length < 4) continue;
+      const detectedLanguage = sidebarLocale(recognized.map((tab) => tab.label));
+      const prototypeLabels = (detectedLanguage || preferredLanguage) === "en"
+        ? ["Inventory", "库存"]
+        : ["库存", "Inventory"];
+      const prototype = recognized.find((tab) => prototypeLabels.includes(tab.label)) || recognized[0];
+      const tabsRoot = candidate.parentElement?.parentElement?.parentElement;
+      const sidebar = tabsRoot?.parentElement;
+      const panelHost = sidebar && Array.from(sidebar.children || []).find(
+        (node) => node !== tabsRoot && /tabPanelsContainer/.test(String(node.className))
+      );
+      if (!panelHost) continue;
+      const rect = typeof candidate.getBoundingClientRect === "function"
+        ? candidate.getBoundingClientRect()
+        : { width: 0, height: 0 };
+      const visible = candidate.isConnected !== false && rect.width > 0 && rect.height > 0;
+      const integration = {
+        tabBar: candidate,
+        tabPrototype: prototype.element,
+        panelHost,
+        detectedLanguage,
+        score: (visible ? 1000 : 0) + recognized.length
+      };
+      if (!best || integration.score > best.score) best = integration;
+    }
+    return best;
+  }
+
+  function createController(options) {
+    const panel = options.panel;
+    const i18n = options.i18n;
+    let integration = null;
+    let tab = null;
+    let hiddenNodes = [];
+    let observer = null;
+    let scheduled = 0;
+    let fallbackTimer = 0;
+    let tabBarClickHandler = null;
+    let tabBarPointerHandler = null;
+    let active = false;
+    let destroyed = false;
+
+    function restoreHiddenNodes() {
+      for (const node of hiddenNodes) {
+        if (!node.isConnected) continue;
+        node.style.display = node.dataset.mwiGitPreviousDisplay || "";
+        delete node.dataset.mwiGitPreviousDisplay;
+      }
+      hiddenNodes = [];
+    }
+
+    function hide() {
+      active = false;
+      panel.hideNative();
+      if (tab) {
+        tab.classList.remove("Mui-selected");
+        tab.setAttribute("aria-selected", "false");
+      }
+      restoreHiddenNodes();
+    }
+
+    function show() {
+      if (!integration || !tab?.isConnected || !panel.isNativeMounted()) return false;
+      hide();
+      hiddenNodes = Array.from(integration.panelHost.children || []).filter((node) => node !== panel.element);
+      for (const node of hiddenNodes) {
+        node.dataset.mwiGitPreviousDisplay = node.style.display;
+        node.style.display = "none";
+      }
+      for (const nativeTab of Array.from(integration.tabBar.children || [])) {
+        nativeTab.classList.remove("Mui-selected");
+        nativeTab.setAttribute("aria-selected", "false");
+      }
+      tab.classList.add("Mui-selected");
+      tab.setAttribute("aria-selected", "true");
+      active = true;
+      panel.openNative();
+      return true;
+    }
+
+    function clearMount() {
+      hide();
+      if (integration?.tabBar && tabBarClickHandler) {
+        integration.tabBar.removeEventListener("click", tabBarClickHandler);
+      }
+      if (integration?.tabBar && tabBarPointerHandler) {
+        integration.tabBar.removeEventListener("pointerdown", tabBarPointerHandler, true);
+      }
+      tabBarClickHandler = null;
+      tabBarPointerHandler = null;
+      tab?.remove();
+      tab = null;
+      integration = null;
+      panel.restoreOverlay();
+    }
+
+    function mountedIn(found) {
+      return Boolean(
+        integration &&
+        tab?.isConnected &&
+        tab.parentElement === found.tabBar &&
+        panel.element.isConnected &&
+        panel.element.parentElement === found.panelHost
+      );
+    }
+
+    function ensure() {
+      if (destroyed) return false;
+      const found = findSidebarIntegration(root.document, i18n.language);
+      if (!found) {
+        if (integration && (!tab?.isConnected || !panel.isNativeMounted())) clearMount();
+        return false;
+      }
+      if (mountedIn(found)) {
+        panel.disableFallback();
+        return true;
+      }
+      const reopen = active;
+      clearMount();
+      integration = found;
+      tab = found.tabPrototype.cloneNode(true);
+      tab.dataset.mwiGitTab = "true";
+      tab.classList.remove("Mui-selected");
+      tab.removeAttribute("id");
+      tab.removeAttribute("disabled");
+      tab.removeAttribute("aria-disabled");
+      tab.setAttribute("aria-selected", "false");
+      tab.setAttribute("role", "tab");
+      if ("disabled" in tab) tab.disabled = false;
+      tab.replaceChildren(root.document.createTextNode(i18n.t("sidebar")));
+      const activate = (event) => {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        show();
+      };
+      tab.addEventListener("pointerdown", activate, true);
+      tab.addEventListener("click", activate, true);
+      found.tabBar.append(tab);
+      panel.mountNative(found.panelHost, hide);
+      tabBarClickHandler = (event) => {
+        if (!tab || tab.parentElement !== found.tabBar || !tab.contains(event.target)) hide();
+      };
+      tabBarPointerHandler = (event) => {
+        if (!tab || tab.parentElement !== found.tabBar || !tab.contains(event.target)) hide();
+      };
+      found.tabBar.addEventListener("pointerdown", tabBarPointerHandler, true);
+      found.tabBar.addEventListener("click", tabBarClickHandler);
+      panel.disableFallback();
+      if (reopen) show();
+      return true;
+    }
+
+    function scheduleEnsure() {
+      if (destroyed || scheduled) return;
+      scheduled = root.setTimeout(() => {
+        scheduled = 0;
+        if (!ensure() && !fallbackTimer) {
+          fallbackTimer = root.setTimeout(() => {
+            fallbackTimer = 0;
+            if (!ensure()) panel.enableFallback();
+          }, 1200);
+        }
+      }, 75);
+    }
+
+    function start() {
+      if (destroyed) return false;
+      const mounted = ensure();
+      if (!mounted) scheduleEnsure();
+      if (typeof root.MutationObserver === "function" && !observer) {
+        observer = new root.MutationObserver(() => {
+          if (!integration || !tab?.isConnected || !panel.isNativeMounted()) scheduleEnsure();
+        });
+        observer.observe(root.document.documentElement || root.document, { childList: true, subtree: true });
+      }
+      return mounted;
+    }
+
+    function open() {
+      if (ensure()) return show();
+      panel.enableFallback();
+      panel.open();
+      return false;
+    }
+
+    function destroy() {
+      destroyed = true;
+      if (scheduled) root.clearTimeout(scheduled);
+      if (fallbackTimer) root.clearTimeout(fallbackTimer);
+      observer?.disconnect();
+      observer = null;
+      clearMount();
+    }
+
+    return Object.freeze({ start, ensure, open, hide, destroy });
+  }
+
+  app.sidebarIntegration = Object.freeze({ SIDEBAR_LABELS, sidebarLocale, findSidebarIntegration, createController });
 })(globalThis);
 
 // ---- src/ui/leaderboard-decorations.js ----
@@ -2355,7 +2649,7 @@
       className: "",
       text: i18n.t("launcher"),
       type: "button",
-      attributes: { id: "mwi-git-launcher", "aria-haspopup": "dialog", "aria-expanded": "false" }
+      attributes: { id: "mwi-git-launcher", "aria-haspopup": "dialog", "aria-expanded": "false", hidden: "" }
     });
     const backdrop = dom.element("div", { className: "mwi-git-backdrop", attributes: { hidden: "" } });
     const panel = dom.element("section", {
@@ -2363,6 +2657,8 @@
       attributes: { role: "dialog", "aria-modal": "true", "aria-labelledby": "mwi-git-title" }
     });
     const shell = dom.element("div", { className: "mwi-git-shell" });
+    let nativeMode = false;
+    let nativeHideHandler = null;
 
     const header = dom.element("header", { className: "mwi-git-header" });
     const titleBlock = dom.element("div", { className: "mwi-git-title-block" });
@@ -2458,20 +2754,26 @@
     }
 
     function open() {
-      backdrop.hidden = false;
+      if (nativeMode) panel.hidden = false;
+      else backdrop.hidden = false;
       launcher.setAttribute("aria-expanded", "true");
       controller.refresh();
       search.focus();
     }
     function hide() {
-      backdrop.hidden = true;
+      if (nativeMode) panel.hidden = true;
+      else backdrop.hidden = true;
       launcher.setAttribute("aria-expanded", "false");
-      launcher.focus();
+      if (!nativeMode && !launcher.hidden) launcher.focus();
+    }
+    function requestHide() {
+      if (nativeMode && nativeHideHandler) nativeHideHandler();
+      else hide();
     }
     launcher.addEventListener("click", open);
-    close.addEventListener("click", hide);
-    backdrop.addEventListener("click", (event) => { if (event.target === backdrop) hide(); });
-    backdrop.addEventListener("keydown", (event) => { if (event.key === "Escape") hide(); });
+    close.addEventListener("click", requestHide);
+    backdrop.addEventListener("click", (event) => { if (event.target === backdrop) requestHide(); });
+    backdrop.addEventListener("keydown", (event) => { if (event.key === "Escape") requestHide(); });
     search.addEventListener("input", () => { settings.query = search.value; render(); });
     guildState.addEventListener("change", () => { settings.guildState = guildState.value; render(); });
     category.addEventListener("change", () => { settings.category = category.value; render(); });
@@ -2512,6 +2814,34 @@
       root.document.body.append(launcher, backdrop);
       render();
     }
+    function mountNative(host, onRequestHide) {
+      nativeMode = true;
+      nativeHideHandler = typeof onRequestHide === "function" ? onRequestHide : null;
+      launcher.hidden = true;
+      backdrop.hidden = true;
+      panel.hidden = true;
+      panel.classList.add("mwi-git-panel--native");
+      panel.setAttribute("role", "region");
+      panel.removeAttribute("aria-modal");
+      host.append(panel);
+    }
+    function restoreOverlay() {
+      if (!nativeMode) return;
+      nativeMode = false;
+      nativeHideHandler = null;
+      panel.hidden = false;
+      panel.classList.remove("mwi-git-panel--native");
+      panel.setAttribute("role", "dialog");
+      panel.setAttribute("aria-modal", "true");
+      backdrop.append(panel);
+      backdrop.hidden = true;
+    }
+    function enableFallback() {
+      if (!nativeMode) launcher.hidden = false;
+    }
+    function disableFallback() {
+      launcher.hidden = true;
+    }
     function setData(next) {
       data = next || { players: [], profileObservations: [], inviteEvents: [] };
       render();
@@ -2523,17 +2853,36 @@
     function destroy() {
       launcher.remove();
       backdrop.remove();
+      panel.remove();
     }
 
     function viewState() {
       return {
         ...settings,
         selectedKey,
-        open: !backdrop.hidden
+        open: nativeMode ? !panel.hidden : !backdrop.hidden
       };
     }
 
-    return { mount, open, hide, setData, setIdentity, render, toast, destroy, viewState };
+    return {
+      mount,
+      mountNative,
+      restoreOverlay,
+      enableFallback,
+      disableFallback,
+      open,
+      openNative: open,
+      hide,
+      hideNative: hide,
+      isNativeMounted: () => nativeMode && panel.isConnected,
+      element: panel,
+      setData,
+      setIdentity,
+      render,
+      toast,
+      destroy,
+      viewState
+    };
   }
 
   app.panelShell = Object.freeze({ createPanel });
@@ -2552,6 +2901,7 @@
   let identity = null;
   let namespace = null;
   let panel = null;
+  let sidebar = null;
   let currentData = { players: [], profileObservations: [], inviteEvents: [] };
   let observer = null;
   let protocolChain = Promise.resolve();
@@ -2730,12 +3080,16 @@
       saveSettings({ ...settings, language });
       const viewState = panel?.viewState() || {};
       i18n.setLanguage(language);
+      sidebar?.destroy();
+      sidebar = null;
       panel?.destroy();
       panel = app.panelShell.createPanel(controller, i18n, viewState);
       panel.mount();
       panel.setIdentity(identity);
       panel.setData(currentData);
-      if (viewState.open) panel.open();
+      sidebar = app.sidebarIntegration.createController({ panel, i18n });
+      sidebar.start();
+      if (viewState.open) sidebar.open();
       decorationScheduler.request();
     }
   };
@@ -2746,6 +3100,8 @@
     panel.mount();
     panel.setIdentity(identity);
     panel.setData(currentData);
+    sidebar = app.sidebarIntegration.createController({ panel, i18n });
+    sidebar.start();
     observer = new MutationObserver(() => decorationScheduler.request());
     observer.observe(root.document.body, { childList: true, subtree: true });
     decorationScheduler.request();
@@ -2774,6 +3130,7 @@
       root.removeEventListener(app.config.bridgeEvent, handleBridge);
       observer?.disconnect();
       decorationScheduler.destroy();
+      sidebar?.destroy();
       panel?.destroy();
       await repository.close();
     }
