@@ -2,7 +2,7 @@
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
 // @namespace    https://github.com/layu/mwi-guild-invite-tracker
-// @version      0.3.3
+// @version      0.3.4
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
 // @description:en Passively records leaderboard profile views, guild status, and native guild invite outcomes
 // @match        https://www.milkywayidle.com/*
@@ -21,7 +21,7 @@
 
   app.config = Object.freeze({
     appId: "mwi-guild-invite-tracker",
-    version: "0.3.3",
+    version: "0.3.4",
     schemaVersion: 1,
     databaseName: "mwi-guild-invite-tracker",
     databaseVersion: 1,
@@ -2342,7 +2342,10 @@
     .mwi-git-detail-content { min-height: 0; }
     .mwi-git-body[data-players-collapsed="true"] { grid-template-columns: minmax(120px, 20%) 1fr; }
     .mwi-git-body[data-timeline-collapsed="true"] { grid-template-columns: 1fr minmax(120px, 20%); }
-    .mwi-git-body[data-players-collapsed="true"][data-timeline-collapsed="true"] { grid-template-columns: 1fr 1fr; }
+    .mwi-git-body[data-players-collapsed="true"][data-timeline-collapsed="true"] {
+      grid-template-columns: 1fr 1fr;
+      align-content: start;
+    }
     .mwi-git-player {
       width: 100%;
       display: grid;
@@ -2519,6 +2522,56 @@
     en: Object.freeze(["Inventory", "Equipment", "Skills", "House", "Loadout", "Loadouts", "Harvest", "Gathering"])
   });
   const EXPECTED_LABELS = new Set([...SIDEBAR_LABELS.zh, ...SIDEBAR_LABELS.en]);
+  const SIDEBAR_ACTIVATION_EVENT = "mwi:sidebar-plugin-activated";
+
+  function createActivationCoordinator(options = {}) {
+    const eventTarget = options.eventTarget;
+    const CustomEventConstructor = options.CustomEvent;
+    const owner = String(options.owner || "").trim();
+    const onDeactivate = typeof options.onDeactivate === "function" ? options.onDeactivate : () => {};
+    let started = false;
+
+    function handleActivation(event) {
+      const activeOwner = typeof event?.detail === "string" ? event.detail : "";
+      if (activeOwner && activeOwner !== owner) onDeactivate(activeOwner);
+    }
+
+    function start() {
+      if (started) return true;
+      if (!owner || typeof eventTarget?.addEventListener !== "function") return false;
+      eventTarget.addEventListener(SIDEBAR_ACTIVATION_EVENT, handleActivation);
+      started = true;
+      return true;
+    }
+
+    function announce() {
+      if (!started) start();
+      if (!started || typeof eventTarget?.dispatchEvent !== "function" || typeof CustomEventConstructor !== "function") {
+        return false;
+      }
+      eventTarget.dispatchEvent(new CustomEventConstructor(SIDEBAR_ACTIVATION_EVENT, { detail: owner }));
+      return true;
+    }
+
+    function destroy() {
+      if (!started) return;
+      eventTarget.removeEventListener(SIDEBAR_ACTIVATION_EVENT, handleActivation);
+      started = false;
+    }
+
+    return Object.freeze({ start, announce, destroy });
+  }
+
+  function createDocumentActivationCoordinator(windowRef, owner, onDeactivate) {
+    const coordinator = createActivationCoordinator({
+      eventTarget: windowRef?.document,
+      CustomEvent: windowRef?.CustomEvent,
+      owner,
+      onDeactivate
+    });
+    coordinator.start();
+    return coordinator;
+  }
 
   function normalizedLabel(element) {
     return String(element?.innerText || element?.textContent || "")
@@ -2586,6 +2639,7 @@
     let tabBarPointerHandler = null;
     let active = false;
     let destroyed = false;
+    const activationCoordinator = createDocumentActivationCoordinator(root, app.config.appId, hide);
 
     function restoreHiddenNodes() {
       for (const node of hiddenNodes) {
@@ -2608,6 +2662,7 @@
 
     function show() {
       if (!integration || !tab?.isConnected || !panel.isNativeMounted()) return false;
+      activationCoordinator.announce();
       hide();
       hiddenNodes = Array.from(integration.panelHost.children || []).filter((node) => node !== panel.element);
       for (const node of hiddenNodes) {
@@ -2712,6 +2767,7 @@
 
     function start() {
       if (destroyed) return false;
+      activationCoordinator.start();
       const mounted = ensure();
       if (!mounted) scheduleEnsure();
       if (typeof root.MutationObserver === "function" && !observer) {
@@ -2736,13 +2792,22 @@
       if (fallbackTimer) root.clearTimeout(fallbackTimer);
       observer?.disconnect();
       observer = null;
+      activationCoordinator.destroy();
       clearMount();
     }
 
     return Object.freeze({ start, ensure, open, hide, destroy });
   }
 
-  app.sidebarIntegration = Object.freeze({ SIDEBAR_LABELS, sidebarLocale, findSidebarIntegration, createController });
+  app.sidebarIntegration = Object.freeze({
+    SIDEBAR_LABELS,
+    SIDEBAR_ACTIVATION_EVENT,
+    sidebarLocale,
+    findSidebarIntegration,
+    createActivationCoordinator,
+    createDocumentActivationCoordinator,
+    createController
+  });
 })(globalThis);
 
 // ---- src/ui/leaderboard-decorations.js ----
