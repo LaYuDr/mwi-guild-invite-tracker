@@ -2,7 +2,7 @@
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
 // @namespace    https://github.com/layu/mwi-guild-invite-tracker
-// @version      0.3.8
+// @version      0.4.0
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
 // @description:en Passively records leaderboard profile views, guild status, and native guild invite outcomes
 // @match        https://www.milkywayidle.com/*
@@ -21,20 +21,22 @@
 
   app.config = Object.freeze({
     appId: "mwi-guild-invite-tracker",
-    version: "0.3.8",
-    schemaVersion: 1,
+    version: "0.4.0",
+    schemaVersion: 2,
     databaseName: "mwi-guild-invite-tracker",
-    databaseVersion: 1,
+    databaseVersion: 2,
     bridgeMarker: "__MWI_GUILD_INVITE_TRACKER_BRIDGE_V1__",
     bridgeEvent: "mwi-git:protocol:v1",
     uiPrefix: "mwi-git",
     settingsKey: "mwi-git:settings:v1",
     lastIdentityKey: "mwi-git:last-identity:v1",
     profileTimeoutMs: 15_000,
+    leaderboardTimeoutMs: 15_000,
     inviteTimeoutMs: 15_000,
     duplicateWindowMs: 1_250,
     staleProfileMs: 30 * 24 * 60 * 60 * 1000,
-    maxImportBytes: 25 * 1024 * 1024,
+    engagementWindowMs: 30 * 24 * 60 * 60 * 1000,
+    maxImportBytes: 100 * 1024 * 1024,
     officialSocketHostPattern: /^api(?:-test)?\.milkywayidle(?:cn)?\.com$/i,
     observedTypes: Object.freeze([
       "init_character_data",
@@ -72,6 +74,20 @@
   ]);
 
   const ACTIVITY_STATES = new Set(["work", "offline", "none"]);
+  const ENGAGEMENT_STATES = new Set(["active", "signal", "observing", "no_progress"]);
+  const PROFILE_METRIC_KEYS = Object.freeze([
+    "totalLevel",
+    "totalExperience",
+    "combatLevel",
+    "achievementsCompleted",
+    "totalTaskPoints",
+    "labyrinthPoints",
+    "labyrinthHighestFloor",
+    "labyrinthHighestFloorRooms",
+    "collectionPoints",
+    "bestiaryPoints",
+    "famePoints"
+  ]);
 
   const ERROR_OUTCOME = Object.freeze({
     "errorNotification.characterNameNotFound": "not_found",
@@ -181,6 +197,7 @@
       lastSeenAt: laterIso(existing.lastSeenAt, incoming.lastSeenAt),
       lastViewedAt: laterIso(existing.lastViewedAt, incoming.lastViewedAt),
       lastInvitedAt: laterIso(existing.lastInvitedAt, incoming.lastInvitedAt),
+      lastLeaderboardSeenAt: laterIso(existing.lastLeaderboardSeenAt, incoming.lastLeaderboardSeenAt),
       latestGuild: useIncomingGuild ? incoming.latestGuild : existing.latestGuild
     };
   }
@@ -199,6 +216,31 @@
       latestGuild: guildSnapshot(profile, viewedAt),
       lastViewedAt: viewedAt,
       lastInvitedAt: null
+    };
+  }
+
+  function playerFromLeaderboard(entry, capturedAt) {
+    const currentName = safeString(entry && entry.name).trim();
+    const characterId = nullableNumber(entry && entry.characterId);
+    return {
+      playerKey: playerKey(characterId, currentName),
+      characterId,
+      currentName,
+      normalizedName: normalizeName(currentName),
+      nameAliases: [],
+      firstSeenAt: capturedAt,
+      lastSeenAt: capturedAt,
+      latestGuild: {
+        state: "unknown",
+        guildId: null,
+        guildName: null,
+        guildRole: null,
+        observedAt: null,
+        certainty: null
+      },
+      lastViewedAt: null,
+      lastInvitedAt: null,
+      lastLeaderboardSeenAt: capturedAt
     };
   }
 
@@ -259,7 +301,9 @@
       source: context && context.leaderboard ? "leaderboard" : (context && context.source) || "unknown",
       leaderboard: context && context.leaderboard ? structuredCloneSafe(context.leaderboard) : null,
       guildSnapshot: guildSnapshot(profile, viewedAt),
-      activitySnapshot: activitySnapshot(profile, viewedAt)
+      activitySnapshot: activitySnapshot(profile, viewedAt),
+      presenceSnapshot: profile?.presenceSnapshot ? structuredCloneSafe(profile.presenceSnapshot) : null,
+      progressSnapshot: profile?.progressSnapshot ? structuredCloneSafe(profile.progressSnapshot) : null
     };
   }
 
@@ -312,10 +356,150 @@
       .sort((a, b) => Date.parse(b.attemptedAt) - Date.parse(a.attemptedAt))[0] || null;
   }
 
+  function canonicalList(value) {
+    return Array.isArray(value)
+      ? [...value].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
+      : null;
+  }
+
+  function positiveDelta(previous, current) {
+    const before = nullableNumber(previous);
+    const after = nullableNumber(current);
+    return before !== null && after !== null && after > before ? after - before : null;
+  }
+
+  function profileEvidenceBetween(previous, current) {
+    const before = previous?.progressSnapshot;
+    const after = current?.progressSnapshot;
+    if (!before || !after) return { comparable: false, evidence: [] };
+    const evidence = [];
+    let comparable = false;
+    for (const key of PROFILE_METRIC_KEYS) {
+      if (nullableNumber(before.metrics?.[key]) !== null && nullableNumber(after.metrics?.[key]) !== null) comparable = true;
+      const delta = positiveDelta(before.metrics?.[key], after.metrics?.[key]);
+      if (delta !== null) evidence.push({ source: "profile", kind: "metric", key, delta, at: current.viewedAt });
+    }
+    const compareCollections = (name, keyField, valueField) => {
+      const beforeItems = Array.isArray(before[name]) ? before[name] : null;
+      const afterItems = Array.isArray(after[name]) ? after[name] : null;
+      if (!beforeItems || !afterItems) return;
+      const previousMap = new Map(beforeItems.map((item) => [item[keyField], item]));
+      for (const item of afterItems) {
+        const earlier = previousMap.get(item[keyField]);
+        if (earlier && nullableNumber(earlier[valueField]) !== null && nullableNumber(item[valueField]) !== null) comparable = true;
+        const delta = positiveDelta(earlier?.[valueField], item[valueField]);
+        if (delta !== null) {
+          evidence.push({ source: "profile", kind: name, key: item[keyField], delta, at: current.viewedAt });
+        }
+      }
+    };
+    compareCollections("skills", "skillHrid", "experience");
+    compareCollections("achievements", "achievementHrid", "progress");
+    compareCollections("houseRooms", "roomHrid", "level");
+    for (const name of ["equipment", "equippedAbilities"]) {
+      const beforeItems = canonicalList(before[name]);
+      const afterItems = canonicalList(after[name]);
+      if (beforeItems && afterItems) {
+        comparable = true;
+        if (JSON.stringify(beforeItems) !== JSON.stringify(afterItems)) {
+          evidence.push({ source: "profile", kind: `${name}_changed`, key: name, delta: null, at: current.viewedAt });
+        }
+      }
+    }
+    return { comparable, evidence };
+  }
+
+  function leaderboardSeriesKey(entry) {
+    return [entry?.typeHrid || "", entry?.categoryHrid || "", entry?.filterKey || ""].join("|");
+  }
+
+  function leaderboardEvidenceBetween(previous, current) {
+    if (!previous || !current || leaderboardSeriesKey(previous) !== leaderboardSeriesKey(current)) {
+      return { comparable: false, evidence: [] };
+    }
+    const evidence = [];
+    for (const key of ["value1", "value2"]) {
+      const delta = positiveDelta(previous[key], current[key]);
+      if (delta !== null) {
+        evidence.push({ source: "leaderboard", kind: "leaderboard", key: current.categoryHrid || key, delta, at: current.capturedAt });
+      }
+    }
+    return { comparable: true, evidence };
+  }
+
+  function engagementAssessment(player, observations, leaderboardEntries, now = Date.now(), options = {}) {
+    const staleMs = Number(options.staleMs) || app.config.staleProfileMs;
+    const windowMs = Number(options.windowMs) || app.config.engagementWindowMs;
+    if (player?.latestGuild?.state !== "none") return { state: "not_applicable", evidence: [], comparisonCount: 0 };
+    const guildObservedAt = Date.parse(player.latestGuild.observedAt || 0);
+    if (!guildObservedAt || now - guildObservedAt > staleMs) {
+      return { state: "stale", evidence: [], comparisonCount: 0, guildObservedAt: player.latestGuild.observedAt || null };
+    }
+    const profiles = (observations || [])
+      .filter((event) => event.playerKey === player.playerKey)
+      .sort((a, b) => Date.parse(a.viewedAt || 0) - Date.parse(b.viewedAt || 0));
+    const entries = (leaderboardEntries || [])
+      .filter((entry) => entry.playerKey === player.playerKey)
+      .sort((a, b) => Date.parse(a.capturedAt || 0) - Date.parse(b.capturedAt || 0));
+    const evidence = [];
+    let comparisonCount = 0;
+    let comparisonSpanMs = 0;
+    for (let index = 1; index < profiles.length; index += 1) {
+      const result = profileEvidenceBetween(profiles[index - 1], profiles[index]);
+      if (result.comparable) {
+        comparisonCount += 1;
+        comparisonSpanMs = Math.max(
+          comparisonSpanMs,
+          Date.parse(profiles[index].viewedAt || 0) - Date.parse(profiles[index - 1].viewedAt || 0)
+        );
+      }
+      evidence.push(...result.evidence);
+    }
+    const series = new Map();
+    for (const entry of entries) {
+      const key = leaderboardSeriesKey(entry);
+      const previous = series.get(key);
+      const result = leaderboardEvidenceBetween(previous, entry);
+      if (result.comparable) {
+        comparisonCount += 1;
+        comparisonSpanMs = Math.max(
+          comparisonSpanMs,
+          Date.parse(entry.capturedAt || 0) - Date.parse(previous.capturedAt || 0)
+        );
+      }
+      evidence.push(...result.evidence);
+      series.set(key, entry);
+    }
+    const latestProfile = profiles[profiles.length - 1] || null;
+    if (latestProfile?.presenceSnapshot?.state === "online") {
+      evidence.push({ source: "profile", kind: "online", key: "online", delta: null, at: latestProfile.viewedAt });
+    }
+    evidence.sort((a, b) => Date.parse(b.at || 0) - Date.parse(a.at || 0));
+    const recentEvidence = evidence.find((item) => now - Date.parse(item.at || 0) <= windowMs) || null;
+    if (recentEvidence) {
+      return { state: "active", evidence, latestEvidence: recentEvidence, comparisonCount, comparisonSpanMs };
+    }
+    if (
+      latestProfile?.presenceSnapshot?.actionType &&
+      now - Date.parse(latestProfile.viewedAt || 0) <= windowMs
+    ) {
+      return {
+        state: "signal",
+        evidence,
+        latestEvidence: { source: "profile", kind: "action", key: latestProfile.presenceSnapshot.actionType, at: latestProfile.viewedAt },
+        comparisonCount,
+        comparisonSpanMs
+      };
+    }
+    if (comparisonCount >= 1 && comparisonSpanMs >= windowMs) {
+      return { state: "no_progress", evidence, latestEvidence: null, comparisonCount, comparisonSpanMs };
+    }
+    return { state: "observing", evidence, latestEvidence: null, comparisonCount, comparisonSpanMs };
+  }
+
   function playerStatus(player, invite, now, staleMs) {
-    if (invite && invite.outcome === "sent") return "invited";
-    if (invite && invite.outcome !== "pending" && invite.outcome !== "sent") return "invite_failed";
     if (player.latestGuild && player.latestGuild.state === "joined") return "has_guild";
+    if (invite && ["pending", "sent"].includes(invite.outcome)) return "invited";
     if (player.latestGuild && player.latestGuild.state === "none") {
       const observed = Date.parse(player.latestGuild.observedAt || 0);
       if (observed && now - observed > staleMs) return "stale";
@@ -324,12 +508,13 @@
     return "unknown";
   }
 
-  function filterPlayers(players, options, invites, observations) {
+  function filterPlayers(players, options, invites, observations, leaderboardEntries) {
     const query = normalizeName(options && options.query);
     const status = options && options.status;
     const guildState = options && options.guildState;
     const inviteOutcome = options && options.inviteOutcome;
     const activityState = options && options.activityState;
+    const engagementState = options && options.engagementState;
     const category = options && options.category;
     const days = Number(options && options.days) || 0;
     const sort = (options && options.sort) || "lastViewedAt";
@@ -361,7 +546,13 @@
         const playerObservations = observationMap.get(player.playerKey) || [];
         const latestActivityState = activityStateForObservation(playerObservations[0]);
         if (activityState && activityState !== "all" && latestActivityState !== activityState) return false;
-        if (category && category !== "all" && !playerObservations.some((event) => event.leaderboard?.categoryHrid === category)) return false;
+        const assessment = engagementAssessment(player, playerObservations, leaderboardEntries, Date.now());
+        if (engagementState && engagementState !== "all" && assessment.state !== engagementState) return false;
+        if (
+          category && category !== "all" &&
+          !playerObservations.some((event) => event.leaderboard?.categoryHrid === category) &&
+          !(leaderboardEntries || []).some((entry) => entry.playerKey === player.playerKey && entry.categoryHrid === category)
+        ) return false;
         if (cutoff) {
           const latestActivity = Math.max(Date.parse(player.lastViewedAt || 0) || 0, Date.parse(player.lastInvitedAt || 0) || 0);
           if (latestActivity < cutoff) return false;
@@ -376,7 +567,10 @@
             const relevant = category && category !== "all"
               ? events.filter((event) => event.leaderboard?.categoryHrid === category)
               : events;
-            const ranks = relevant.map((event) => Number(event.leaderboard?.rank)).filter(Number.isFinite);
+            const leaderboardRanks = (leaderboardEntries || [])
+              .filter((entry) => entry.playerKey === player.playerKey && (!category || category === "all" || entry.categoryHrid === category))
+              .map((entry) => Number(entry.rank));
+            const ranks = [...relevant.map((event) => Number(event.leaderboard?.rank)), ...leaderboardRanks].filter(Number.isFinite);
             return ranks.length ? Math.min(...ranks) : Number.POSITIVE_INFINITY;
           };
           return direction * (rankFor(a) - rankFor(b));
@@ -390,6 +584,8 @@
   app.core = Object.freeze({
     OUTCOMES,
     ACTIVITY_STATES,
+    ENGAGEMENT_STATES,
+    PROFILE_METRIC_KEYS,
     ERROR_OUTCOME,
     normalizeName,
     nullableNumber,
@@ -402,6 +598,7 @@
     mergePlayer,
     laterIso,
     playerFromProfile,
+    playerFromLeaderboard,
     playerFromInvite,
     playerFromGuildMember,
     makeObservation,
@@ -410,6 +607,9 @@
     outcomeFromErrorKey,
     isIsoDate,
     latestInviteForPlayer,
+    profileEvidenceBetween,
+    leaderboardEvidenceBetween,
+    engagementAssessment,
     playerStatus,
     filterPlayers,
     structuredCloneSafe
@@ -436,6 +636,7 @@
       allStatuses: "全部状态",
       allGuildStates: "全部公会状态",
       allActivityStates: "全部活动状态",
+      allEngagementStates: "全部游玩判断",
       allCategories: "全部排行榜",
       allInviteOutcomes: "全部邀请结果",
       allTime: "全部时间",
@@ -450,6 +651,17 @@
       activityOffline: "离线",
       activityNone: "无",
       activityUnrecorded: "无记录",
+      engagementActive: "近期仍在游玩",
+      engagementSignal: "近期出现活动",
+      engagementObserving: "观察中",
+      engagementNoProgress: "长期未见进展",
+      engagementStale: "资料已过期",
+      engagementNotApplicable: "已有公会 · 不判断",
+      engagementEvidenceOnline: "人物资料显示在线",
+      engagementEvidenceAction: "人物资料显示活动：{action}",
+      engagementEvidenceProfile: "人物资料数值增加",
+      engagementEvidenceLeaderboard: "排行榜经验增加",
+      leaderboardCaptured: "记录排行榜",
       noGuildActivityUnrecorded: "无公会 · 在线数据无记录",
       guildStatus: "公会状态",
       inviting: "邀请中",
@@ -525,6 +737,8 @@
       search: "Search players",
       allStatuses: "All statuses",
       allGuildStates: "All guild states",
+      allActivityStates: "All profile presence states",
+      allEngagementStates: "All play assessments",
       allCategories: "All leaderboards",
       allInviteOutcomes: "All invite outcomes",
       allTime: "All time",
@@ -535,6 +749,21 @@
       hasGuild: "Has guild",
       ownGuild: "Your guild member",
       notChecked: "Not checked",
+      activityWork: "Activity shown",
+      activityOffline: "Offline",
+      activityNone: "None",
+      activityUnrecorded: "Not recorded",
+      engagementActive: "Recently active",
+      engagementSignal: "Recent activity shown",
+      engagementObserving: "Observing",
+      engagementNoProgress: "No progress seen",
+      engagementStale: "Profile stale",
+      engagementNotApplicable: "In a guild · not assessed",
+      engagementEvidenceOnline: "Profile showed online",
+      engagementEvidenceAction: "Profile activity: {action}",
+      engagementEvidenceProfile: "Profile value increased",
+      engagementEvidenceLeaderboard: "Leaderboard experience increased",
+      leaderboardCaptured: "Leaderboard captured",
       guildStatus: "Guild status",
       inviting: "Invitation pending",
       invited: "Invited",
@@ -752,14 +981,32 @@
         }[value] || "activityUnrecorded";
         return messages[language][key] || messages.zh[key] || key;
       },
+      engagementState(value) {
+        const key = {
+          active: "engagementActive",
+          signal: "engagementSignal",
+          observing: "engagementObserving",
+          no_progress: "engagementNoProgress",
+          stale: "engagementStale",
+          not_applicable: "engagementNotApplicable"
+        }[value] || "unknown";
+        return messages[language][key] || messages.zh[key] || key;
+      },
+      evidence(item) {
+        if (!item) return "";
+        if (item.kind === "online") return messages[language].engagementEvidenceOnline;
+        if (item.kind === "action") return messages[language].engagementEvidenceAction.replace("{action}", item.key || "—");
+        if (item.source === "leaderboard") return messages[language].engagementEvidenceLeaderboard;
+        return messages[language].engagementEvidenceProfile;
+      },
       leaderboardType(value) {
         return mappedName(leaderboardTypeNames, value, language);
       },
       summary(counts) {
         if (language === "zh") {
-          return `${counts.players} 位候选 · ${counts.observations} 次查看 · ${counts.invites} 次邀请`;
+          return `${counts.players} 位候选 · ${counts.leaderboardCaptures || 0} 次榜单 · ${counts.observations} 次查看 · ${counts.invites} 次邀请`;
         }
-        return `${counts.players} candidates · ${counts.observations} views · ${counts.invites} invites`;
+        return `${counts.players} candidates · ${counts.leaderboardCaptures || 0} captures · ${counts.observations} views · ${counts.invites} invites`;
       },
       duplicateCount(count) {
         return language === "zh" ? `${messages.zh.duplicate} ${i18nNumber(count)} 条` : `${i18nNumber(count)} duplicate`;
@@ -843,11 +1090,118 @@
       return "none";
     }
 
+    function numberOrNull(value) {
+      return Number.isFinite(Number(value)) ? Number(value) : null;
+    }
+
+    function listFrom(value) {
+      if (Array.isArray(value)) return value;
+      const object = asObject(value);
+      return Object.entries(object).map(([mapKey, entry]) => ({ mapKey, ...asObject(entry) }));
+    }
+
+    function firstString(entry, keys, fallback = "") {
+      for (const key of keys) {
+        if (typeof entry?.[key] === "string" && entry[key]) return entry[key];
+      }
+      return fallback;
+    }
+
+    function sanitizeSkills(value) {
+      if (value == null) return null;
+      return listFrom(value).map((entry) => ({
+        skillHrid: firstString(entry, ["skillHrid", "skillHRID", "hrid"], entry.mapKey || ""),
+        level: numberOrNull(entry.level),
+        experience: numberOrNull(entry.experience)
+      })).filter((entry) => entry.skillHrid);
+    }
+
+    function sanitizeAchievements(value) {
+      if (value == null) return null;
+      return listFrom(value).map((entry) => ({
+        achievementHrid: firstString(entry, ["achievementHrid", "achievementHRID", "hrid"], entry.mapKey || ""),
+        progress: numberOrNull(entry.progress ?? entry.currentValue ?? entry.value),
+        completed: entry.completed === true || entry.isCompleted === true || entry.completedAt != null
+          ? true
+          : entry.completed === false || entry.isCompleted === false
+            ? false
+            : null
+      })).filter((entry) => entry.achievementHrid);
+    }
+
+    function sanitizeEquipment(value) {
+      if (value == null) return null;
+      return listFrom(value).map((entry) => ({
+        slotHrid: firstString(entry, ["slotHrid", "slotHRID", "slot"], entry.mapKey || ""),
+        itemHrid: firstString(entry, ["itemHrid", "itemHRID", "hrid"]),
+        enhancementLevel: numberOrNull(entry.enhancementLevel ?? entry.level)
+      })).filter((entry) => entry.slotHrid || entry.itemHrid);
+    }
+
+    function sanitizeAbilities(value) {
+      if (value == null) return null;
+      return listFrom(value).map((entry) => ({
+        slotNumber: numberOrNull(entry.slotNumber ?? entry.mapKey),
+        abilityHrid: firstString(entry, ["abilityHrid", "abilityHRID", "hrid"]),
+        level: numberOrNull(entry.level),
+        experience: numberOrNull(entry.experience)
+      })).filter((entry) => entry.abilityHrid || entry.slotNumber !== null);
+    }
+
+    function sanitizeHouseRooms(value) {
+      if (value == null) return null;
+      return listFrom(value).map((entry) => ({
+        roomHrid: firstString(entry, ["roomHrid", "roomHRID", "hrid"], entry.mapKey || ""),
+        level: numberOrNull(entry.level)
+      })).filter((entry) => entry.roomHrid);
+    }
+
+    function profileSnapshots(profile, sharable) {
+      const skills = sanitizeSkills(profile.characterSkills);
+      const totalSkill = skills?.find((entry) => /(?:^|\/)total_level$/i.test(entry.skillHrid)) || null;
+      const achievements = sanitizeAchievements(profile.characterAchievements);
+      const completedAchievements = achievements?.some((entry) => entry.completed !== null)
+        ? achievements.filter((entry) => entry.completed).length
+        : numberOrNull(profile.achievementsCompleted ?? profile.completedAchievementCount);
+      const actionType = typeof sharable.actionType === "string" && sharable.actionType.trim()
+        ? sharable.actionType.trim()
+        : null;
+      let presenceState = "unknown";
+      if (sharable.isOnline === true) presenceState = "online";
+      else if (sharable.hideOnlineStatus === true) presenceState = "hidden";
+      else if (sharable.isOnline === false) presenceState = "offline";
+      return {
+        presenceSnapshot: { state: presenceState, actionType },
+        progressSnapshot: {
+          metrics: {
+            totalLevel: numberOrNull(totalSkill?.level ?? profile.totalLevel),
+            totalExperience: numberOrNull(totalSkill?.experience ?? profile.totalExperience),
+            combatLevel: numberOrNull(profile.combatLevel),
+            achievementsCompleted: completedAchievements,
+            achievementsObservedTotal: achievements ? achievements.length : null,
+            totalTaskPoints: numberOrNull(profile.totalTaskPoints),
+            labyrinthPoints: numberOrNull(profile.labyrinthPoints),
+            labyrinthHighestFloor: numberOrNull(profile.labyrinthHighestFloor),
+            labyrinthHighestFloorRooms: numberOrNull(profile.labyrinthHighestFloorRooms),
+            collectionPoints: numberOrNull(profile.collectionPoints),
+            bestiaryPoints: numberOrNull(profile.bestiaryPoints),
+            famePoints: numberOrNull(profile.famePoints)
+          },
+          skills,
+          achievements,
+          equipment: sanitizeEquipment(profile.wearableItemMap),
+          equippedAbilities: sanitizeAbilities(profile.equippedAbilities),
+          houseRooms: sanitizeHouseRooms(profile.characterHouseRoomMap)
+        }
+      };
+    }
+
     function sanitizeLeaderboardRows(rows) {
       if (!Array.isArray(rows)) return [];
-      return rows.slice(0, 500).map((row) => ({
+      return rows.slice(0, 100).map((row) => ({
         rank: Number.isFinite(Number(row?.rank)) ? Number(row.rank) : null,
         name: typeof row?.name === "string" ? row.name : "",
+        characterId: numberOrNull(row?.characterId ?? row?.characterID),
         value1: row?.value1 ?? null,
         value2: row?.value2 ?? null
       }));
@@ -886,14 +1240,20 @@
       }
       if (type === "leaderboard_updated") {
         const leaderboard = asObject(message.leaderboard);
+        const responseFiltersKnown = ["guildTypeFilter", "gameModeFilter", "trialFilter"]
+          .some((key) => message[key] != null || leaderboard[key] != null);
         return {
           type,
           leaderboardType: leaderboard.type || message.leaderboardType || null,
           leaderboardCategory: leaderboard.category || message.leaderboardCategory || null,
-          guildTypeFilter: message.guildTypeFilter || "all",
-          gameModeFilter: message.gameModeFilter || "all",
-          trialFilter: message.trialFilter || "all",
+          guildTypeFilter: message.guildTypeFilter || leaderboard.guildTypeFilter || "all",
+          gameModeFilter: message.gameModeFilter || leaderboard.gameModeFilter || "all",
+          trialFilter: message.trialFilter || leaderboard.trialFilter || "all",
+          filtersKnown: responseFiltersKnown,
           leaderboardRevision: Number(message.leaderboardRevision || 0),
+          columnNames: Array.isArray(leaderboard.columnNames || message.columnNames)
+            ? (leaderboard.columnNames || message.columnNames).slice(0, 4).map((value) => String(value || ""))
+            : [],
           rows: sanitizeLeaderboardRows(leaderboard.rows || message.rows)
         };
       }
@@ -906,6 +1266,7 @@
       if (type === "profile_shared") {
         const profile = asObject(message.profile || message.profileSharedData || message.profileData);
         const sharable = asObject(profile.sharableCharacter);
+        const snapshots = profileSnapshots(profile, sharable);
         return {
           type,
           profile: {
@@ -914,7 +1275,9 @@
             guildId: profile.guildId ?? null,
             guildName: profile.guildName ?? null,
             guildRole: profile.guildRole ?? null,
-            activityState: profileActivityState(sharable)
+            activityState: profileActivityState(sharable),
+            presenceSnapshot: snapshots.presenceSnapshot,
+            progressSnapshot: snapshots.progressSnapshot
           }
         };
       }
@@ -1097,8 +1460,10 @@
             gameMode: message.gameModeFilter || "all",
             trial: message.trialFilter || "all"
           },
+          filtersKnown: message.filtersKnown !== false,
           revision: Number(message.leaderboardRevision || 0),
           capturedAt: at,
+          columnNames: Array.isArray(message.columnNames) ? message.columnNames.slice(0, 4) : [],
           rows: Array.isArray(message.rows)
             ? message.rows.filter((row) => row && typeof row.name === "string" && row.name.trim())
             : []
@@ -1175,12 +1540,16 @@
     const randomUUID = options.randomUUID;
     let identity = options.identity || null;
     let leaderboard = null;
+    const pendingLeaderboards = [];
     const pendingProfiles = [];
     const pendingInvites = [];
     const recentProfiles = new Map();
 
     function prune(now) {
-      const resolvedCutoff = now - Math.max(config.profileTimeoutMs, config.inviteTimeoutMs) * 4;
+      const resolvedCutoff = now - Math.max(config.profileTimeoutMs, config.inviteTimeoutMs, config.leaderboardTimeoutMs) * 4;
+      for (let index = pendingLeaderboards.length - 1; index >= 0; index -= 1) {
+        if (Date.parse(pendingLeaderboards[index].requestedAt) < resolvedCutoff) pendingLeaderboards.splice(index, 1);
+      }
       for (let index = pendingProfiles.length - 1; index >= 0; index -= 1) {
         if (pendingProfiles[index].resolved && Date.parse(pendingProfiles[index].requestedAt) < resolvedCutoff) {
           pendingProfiles.splice(index, 1);
@@ -1231,6 +1600,66 @@
       return { type: "update_invite", invite: entry.record };
     }
 
+    function filterKey(filters) {
+      return [filters?.guildType || "all", filters?.gameMode || "all", filters?.trial || "all"].join("|");
+    }
+
+    function matchesLeaderboard(request, snapshot) {
+      if (request.resolved) return false;
+      const same = (left, right) => !left || !right || left === right;
+      return same(request.leaderboard.typeHrid, snapshot.typeHrid) &&
+        same(request.leaderboard.categoryHrid, snapshot.categoryHrid) &&
+        (snapshot.filtersKnown === false || filterKey(request.leaderboard.filters) === filterKey(snapshot.filters));
+    }
+
+    function isPlayerLeaderboard(value) {
+      return !/(^|[\/_])guild(?:$|[\/_])/i.test(String(value?.typeHrid || ""));
+    }
+
+    function makeLeaderboardRecord(request, snapshot) {
+      const captureId = core.uuid(randomUUID);
+      const resolvedFilters = snapshot.filtersKnown === false ? request.leaderboard.filters : snapshot.filters;
+      const key = filterKey(resolvedFilters);
+      const capture = {
+        id: captureId,
+        typeHrid: snapshot.typeHrid || request.leaderboard.typeHrid || null,
+        categoryHrid: snapshot.categoryHrid || request.leaderboard.categoryHrid || null,
+        filters: core.structuredCloneSafe(resolvedFilters),
+        filterKey: key,
+        columnNames: Array.isArray(snapshot.columnNames) ? [...snapshot.columnNames] : [],
+        requestedAt: request.requestedAt,
+        capturedAt: snapshot.capturedAt,
+        revision: snapshot.revision,
+        rowCount: snapshot.rows.length
+      };
+      const entries = snapshot.rows.slice(0, 100).map((row, index) => {
+        const player = core.playerFromLeaderboard(row, snapshot.capturedAt);
+        return {
+          id: `${captureId}:${index + 1}`,
+          captureId,
+          playerKey: player.playerKey,
+          characterId: player.characterId,
+          normalizedName: player.normalizedName,
+          name: player.currentName,
+          typeHrid: capture.typeHrid,
+          categoryHrid: capture.categoryHrid,
+          filters: core.structuredCloneSafe(capture.filters),
+          filterKey: key,
+          columnNames: [...capture.columnNames],
+          rank: core.nullableNumber(row.rank),
+          value1: core.nullableNumber(row.value1),
+          value2: core.nullableNumber(row.value2),
+          capturedAt: snapshot.capturedAt
+        };
+      }).filter((entry) => entry.normalizedName);
+      return {
+        type: "record_leaderboard",
+        capture,
+        entries,
+        players: entries.map((entry) => core.playerFromLeaderboard(entry, snapshot.capturedAt))
+      };
+    }
+
     function consume(event) {
       if (!event) return [];
       prune(Date.parse(event.at || 0) || Date.now());
@@ -1252,9 +1681,23 @@
       }
       if (event.kind === "leaderboard_snapshot") {
         leaderboard = event.leaderboard;
-        return [{ type: "leaderboard", leaderboard }];
+        const actions = [{ type: "leaderboard", leaderboard }];
+        const request = [...pendingLeaderboards].reverse().find((entry) => matchesLeaderboard(entry, leaderboard));
+        if (request) {
+          request.resolved = true;
+          if (isPlayerLeaderboard(leaderboard)) actions.push(makeLeaderboardRecord(request, leaderboard));
+        }
+        return actions;
       }
-      if (event.kind === "leaderboard_requested") return [];
+      if (event.kind === "leaderboard_requested") {
+        pendingLeaderboards.push({
+          id: core.uuid(randomUUID),
+          requestedAt: event.at,
+          leaderboard: core.structuredCloneSafe(event.leaderboard),
+          resolved: false
+        });
+        return [];
+      }
       if (event.kind === "profile_requested") {
         pendingProfiles.push({
           name: event.name,
@@ -1362,6 +1805,7 @@
         identity: core.structuredCloneSafe(identity),
         leaderboard: core.structuredCloneSafe(leaderboard),
         pendingProfiles: pendingProfiles.filter((entry) => !entry.resolved).length,
+        pendingLeaderboards: pendingLeaderboards.filter((entry) => !entry.resolved).length,
         pendingInvites: pendingInvites.filter((entry) => !entry.resolved).length
       };
     }
@@ -1378,7 +1822,7 @@
 
   const app = (root.MWIGuildInviteTracker = root.MWIGuildInviteTracker || {});
   const core = app.core;
-  const STORE_NAMES = ["players", "profileObservations", "inviteEvents", "metadata"];
+  const STORE_NAMES = ["players", "profileObservations", "inviteEvents", "leaderboardCaptures", "leaderboardEntries", "metadata"];
 
   function namespaceFor(identity) {
     if (!identity || identity.characterId == null) return null;
@@ -1441,6 +1885,19 @@
           invites.createIndex("namespace_attempted", ["namespace", "attemptedAt"], { unique: false });
           invites.createIndex("namespace_outcome", ["namespace", "outcome"], { unique: false });
         }
+        if (!db.objectStoreNames.contains("leaderboardCaptures")) {
+          const captures = db.createObjectStore("leaderboardCaptures", { keyPath: "pk" });
+          captures.createIndex("namespace", "namespace", { unique: false });
+          captures.createIndex("namespace_captured", ["namespace", "capturedAt"], { unique: false });
+          captures.createIndex("namespace_category", ["namespace", "categoryHrid"], { unique: false });
+        }
+        if (!db.objectStoreNames.contains("leaderboardEntries")) {
+          const entries = db.createObjectStore("leaderboardEntries", { keyPath: "pk" });
+          entries.createIndex("namespace", "namespace", { unique: false });
+          entries.createIndex("namespace_player", ["namespace", "playerKey"], { unique: false });
+          entries.createIndex("namespace_capture", ["namespace", "captureId"], { unique: false });
+          entries.createIndex("namespace_captured", ["namespace", "capturedAt"], { unique: false });
+        }
         if (!db.objectStoreNames.contains("metadata")) {
           const metadata = db.createObjectStore("metadata", { keyPath: "pk" });
           metadata.createIndex("namespace", "namespace", { unique: false });
@@ -1465,7 +1922,7 @@
 
     async function rewritePlayerKey(transaction, namespace, oldKey, newKey) {
       if (!oldKey || oldKey === newKey) return;
-      for (const storeName of ["profileObservations", "inviteEvents"]) {
+      for (const storeName of ["profileObservations", "inviteEvents", "leaderboardEntries"]) {
         const store = transaction.objectStore(storeName);
         const records = await requestPromise(store.index("namespace_player").getAll([namespace, oldKey]));
         for (const record of records) {
@@ -1489,7 +1946,7 @@
 
     async function recordObservation(namespace, player, observation) {
       const db = await database();
-      const tx = db.transaction(["players", "profileObservations", "inviteEvents"], "readwrite");
+      const tx = db.transaction(["players", "profileObservations", "inviteEvents", "leaderboardEntries"], "readwrite");
       const done = transactionPromise(tx);
       try {
         const existing = await findPlayer(tx, namespace, player);
@@ -1503,6 +1960,38 @@
         tx.objectStore("profileObservations").put(dbRecord(namespace, "profileObservations", observation));
         await done;
         return { player: merged, observation };
+      } catch (error) {
+        tx.abort();
+        await done.catch(() => {});
+        throw error;
+      }
+    }
+
+    async function recordLeaderboard(namespace, players, capture, entries) {
+      const db = await database();
+      const tx = db.transaction(["players", "profileObservations", "inviteEvents", "leaderboardCaptures", "leaderboardEntries"], "readwrite");
+      const done = transactionPromise(tx);
+      const mergedPlayers = [];
+      try {
+        for (let index = 0; index < (players || []).length; index += 1) {
+          const player = players[index];
+          if (!player?.normalizedName) continue;
+          const existing = await findPlayer(tx, namespace, player);
+          const merged = core.mergePlayer(existing && publicRecord(existing), player);
+          if (existing && existing.playerKey !== merged.playerKey) {
+            await rewritePlayerKey(tx, namespace, existing.playerKey, merged.playerKey);
+            tx.objectStore("players").delete(existing.pk);
+          }
+          if (entries[index]) entries[index].playerKey = merged.playerKey;
+          tx.objectStore("players").put(dbRecord(namespace, "players", merged));
+          mergedPlayers.push(merged);
+        }
+        tx.objectStore("leaderboardCaptures").put(dbRecord(namespace, "leaderboardCaptures", capture));
+        for (const entry of entries || []) {
+          tx.objectStore("leaderboardEntries").put(dbRecord(namespace, "leaderboardEntries", entry));
+        }
+        await done;
+        return { players: mergedPlayers, capture, entries };
       } catch (error) {
         tx.abort();
         await done.catch(() => {});
@@ -1534,7 +2023,7 @@
 
     async function upsertPlayers(namespace, players) {
       const db = await database();
-      const tx = db.transaction(["players", "profileObservations", "inviteEvents"], "readwrite");
+      const tx = db.transaction(["players", "profileObservations", "inviteEvents", "leaderboardEntries"], "readwrite");
       const done = transactionPromise(tx);
       const mergedPlayers = [];
       try {
@@ -1575,9 +2064,9 @@
 
     async function snapshot(namespace) {
       const db = await database();
-      const tx = db.transaction(["players", "profileObservations", "inviteEvents"], "readonly");
+      const tx = db.transaction(["players", "profileObservations", "inviteEvents", "leaderboardCaptures", "leaderboardEntries"], "readonly");
       const data = {};
-      for (const name of ["players", "profileObservations", "inviteEvents"]) {
+      for (const name of ["players", "profileObservations", "inviteEvents", "leaderboardCaptures", "leaderboardEntries"]) {
         const records = await requestPromise(tx.objectStore(name).index("namespace").getAll(namespace));
         data[name] = records.map(publicRecord);
       }
@@ -1592,10 +2081,10 @@
 
     async function replaceSnapshot(namespace, data) {
       const db = await database();
-      const tx = db.transaction(["players", "profileObservations", "inviteEvents"], "readwrite");
+      const tx = db.transaction(["players", "profileObservations", "inviteEvents", "leaderboardCaptures", "leaderboardEntries"], "readwrite");
       const done = transactionPromise(tx);
       try {
-        for (const name of ["players", "profileObservations", "inviteEvents"]) {
+        for (const name of ["players", "profileObservations", "inviteEvents", "leaderboardCaptures", "leaderboardEntries"]) {
           await clearStoreNamespace(tx.objectStore(name), namespace);
           for (const record of data[name] || []) {
             tx.objectStore(name).put(dbRecord(namespace, name, record));
@@ -1614,13 +2103,15 @@
       const next = {
         players: current.players.filter((player) => player.playerKey !== key),
         profileObservations: current.profileObservations.filter((event) => event.playerKey !== key),
-        inviteEvents: current.inviteEvents.filter((event) => event.playerKey !== key)
+        inviteEvents: current.inviteEvents.filter((event) => event.playerKey !== key),
+        leaderboardCaptures: current.leaderboardCaptures,
+        leaderboardEntries: current.leaderboardEntries.filter((entry) => entry.playerKey !== key)
       };
       await replaceSnapshot(namespace, next);
     }
 
     async function clearNamespace(namespace) {
-      return replaceSnapshot(namespace, { players: [], profileObservations: [], inviteEvents: [] });
+      return replaceSnapshot(namespace, { players: [], profileObservations: [], inviteEvents: [], leaderboardCaptures: [], leaderboardEntries: [] });
     }
 
     async function close() {
@@ -1633,6 +2124,7 @@
     return {
       namespaceFor,
       recordObservation,
+      recordLeaderboard,
       recordInvite,
       upsertPlayers,
       updateInvite,
@@ -1648,7 +2140,7 @@
     const spaces = new Map();
     function get(namespace) {
       if (!spaces.has(namespace)) {
-        spaces.set(namespace, { players: [], profileObservations: [], inviteEvents: [] });
+        spaces.set(namespace, { players: [], profileObservations: [], inviteEvents: [], leaderboardCaptures: [], leaderboardEntries: [] });
       }
       return spaces.get(namespace);
     }
@@ -1656,7 +2148,13 @@
       return core.structuredCloneSafe(get(namespace));
     }
     async function replaceSnapshot(namespace, data) {
-      spaces.set(namespace, core.structuredCloneSafe(data));
+      spaces.set(namespace, core.structuredCloneSafe({
+        players: data.players || [],
+        profileObservations: data.profileObservations || [],
+        inviteEvents: data.inviteEvents || [],
+        leaderboardCaptures: data.leaderboardCaptures || [],
+        leaderboardEntries: data.leaderboardEntries || []
+      }));
     }
     async function recordObservation(namespace, player, observation) {
       const data = get(namespace);
@@ -1668,7 +2166,7 @@
       const existing = index >= 0 ? data.players[index] : null;
       const merged = core.mergePlayer(existing, player);
       if (existing && existing.playerKey !== merged.playerKey) {
-        for (const event of [...data.profileObservations, ...data.inviteEvents]) {
+        for (const event of [...data.profileObservations, ...data.inviteEvents, ...data.leaderboardEntries]) {
           if (event.playerKey === existing.playerKey) event.playerKey = merged.playerKey;
         }
       }
@@ -1677,6 +2175,30 @@
       observation.playerKey = merged.playerKey;
       data.profileObservations.push(core.structuredCloneSafe(observation));
       return { player: merged, observation };
+    }
+    async function recordLeaderboard(namespace, players, capture, entries) {
+      const data = get(namespace);
+      const mergedPlayers = [];
+      for (let offset = 0; offset < (players || []).length; offset += 1) {
+        const player = players[offset];
+        const index = data.players.findIndex(
+          (item) => (player.characterId != null && item.characterId === player.characterId) || item.normalizedName === player.normalizedName
+        );
+        const existing = index >= 0 ? data.players[index] : null;
+        const merged = core.mergePlayer(existing, player);
+        if (existing && existing.playerKey !== merged.playerKey) {
+          for (const event of [...data.profileObservations, ...data.inviteEvents, ...data.leaderboardEntries]) {
+            if (event.playerKey === existing.playerKey) event.playerKey = merged.playerKey;
+          }
+        }
+        if (entries[offset]) entries[offset].playerKey = merged.playerKey;
+        if (index >= 0) data.players[index] = merged;
+        else data.players.push(merged);
+        mergedPlayers.push(core.structuredCloneSafe(merged));
+      }
+      data.leaderboardCaptures.push(core.structuredCloneSafe(capture));
+      data.leaderboardEntries.push(...core.structuredCloneSafe(entries || []));
+      return { players: mergedPlayers, capture, entries };
     }
     async function recordInvite(namespace, player, invite) {
       const data = get(namespace);
@@ -1701,7 +2223,7 @@
         const existing = index >= 0 ? data.players[index] : null;
         const merged = core.mergePlayer(existing, player);
         if (existing && existing.playerKey !== merged.playerKey) {
-          for (const event of [...data.profileObservations, ...data.inviteEvents]) {
+          for (const event of [...data.profileObservations, ...data.inviteEvents, ...data.leaderboardEntries]) {
             if (event.playerKey === existing.playerKey) event.playerKey = merged.playerKey;
           }
         }
@@ -1723,15 +2245,17 @@
       data.players = data.players.filter((item) => item.playerKey !== key);
       data.profileObservations = data.profileObservations.filter((item) => item.playerKey !== key);
       data.inviteEvents = data.inviteEvents.filter((item) => item.playerKey !== key);
+      data.leaderboardEntries = data.leaderboardEntries.filter((item) => item.playerKey !== key);
     }
     async function clearNamespace(namespace) {
-      spaces.set(namespace, { players: [], profileObservations: [], inviteEvents: [] });
+      spaces.set(namespace, { players: [], profileObservations: [], inviteEvents: [], leaderboardCaptures: [], leaderboardEntries: [] });
     }
     return {
       namespaceFor,
       snapshot,
       replaceSnapshot,
       recordObservation,
+      recordLeaderboard,
       recordInvite,
       upsertPlayers,
       updateInvite,
@@ -1765,12 +2289,19 @@
       .slice(0, 60) || "character";
   }
 
-  function stableData(data) {
-    return {
+  function stableData(data, schemaVersion = app.config.schemaVersion) {
+    const normalized = {
       players: [...(data.players || [])].sort((a, b) => a.playerKey.localeCompare(b.playerKey)),
       profileObservations: [...(data.profileObservations || [])].sort((a, b) => a.id.localeCompare(b.id)),
-      inviteEvents: [...(data.inviteEvents || [])].sort((a, b) => a.id.localeCompare(b.id))
+      inviteEvents: [...(data.inviteEvents || [])].sort((a, b) => a.id.localeCompare(b.id)),
+      leaderboardCaptures: [...(data.leaderboardCaptures || [])].sort((a, b) => a.id.localeCompare(b.id)),
+      leaderboardEntries: [...(data.leaderboardEntries || [])].sort((a, b) => a.id.localeCompare(b.id))
     };
+    if (schemaVersion === 1) {
+      delete normalized.leaderboardCaptures;
+      delete normalized.leaderboardEntries;
+    }
+    return normalized;
   }
 
   async function sha256(text) {
@@ -1798,7 +2329,9 @@
       counts: {
         players: normalized.players.length,
         profileObservations: normalized.profileObservations.length,
-        inviteEvents: normalized.inviteEvents.length
+        inviteEvents: normalized.inviteEvents.length,
+        leaderboardCaptures: normalized.leaderboardCaptures.length,
+        leaderboardEntries: normalized.leaderboardEntries.length
       },
       checksum: checksumValue ? { algorithm: "SHA-256", value: checksumValue } : null,
       data: normalized
@@ -1843,12 +2376,23 @@
     );
   }
 
+  function validateCapture(event) {
+    return Boolean(event && typeof event.id === "string" && core.isIsoDate(event.capturedAt) && Number.isInteger(event.rowCount));
+  }
+
+  function validateLeaderboardEntry(event, keys, captureIds) {
+    return Boolean(
+      event && typeof event.id === "string" && keys.has(event.playerKey) && captureIds.has(event.captureId) &&
+      typeof event.name === "string" && core.isIsoDate(event.capturedAt)
+    );
+  }
+
   async function validateBackup(backup) {
     const errors = [];
     if (!backup || backup.format !== app.config.appId) errors.push("format");
     if (!Number.isInteger(backup?.schemaVersion)) errors.push("schemaVersion");
     else if (backup.schemaVersion > app.config.schemaVersion) errors.push("futureVersion");
-    else if (backup.schemaVersion !== app.config.schemaVersion) errors.push("unsupportedVersion");
+    else if (backup.schemaVersion < 1) errors.push("unsupportedVersion");
     if (!core.isIsoDate(backup?.exportedAt)) errors.push("exportedAt");
     if (!backup?.source || typeof backup.source.hostname !== "string") errors.push("source");
     const data = backup?.data;
@@ -1856,11 +2400,17 @@
       errors.push("data");
       return { valid: false, errors };
     }
+    if (backup.schemaVersion >= 2 && (!Array.isArray(data.leaderboardCaptures) || !Array.isArray(data.leaderboardEntries))) {
+      errors.push("data");
+      return { valid: false, errors };
+    }
     if (
       !backup.counts ||
       backup.counts.players !== data.players.length ||
       backup.counts.profileObservations !== data.profileObservations.length ||
-      backup.counts.inviteEvents !== data.inviteEvents.length
+      backup.counts.inviteEvents !== data.inviteEvents.length ||
+      (backup.schemaVersion >= 2 && backup.counts.leaderboardCaptures !== data.leaderboardCaptures.length) ||
+      (backup.schemaVersion >= 2 && backup.counts.leaderboardEntries !== data.leaderboardEntries.length)
     ) {
       errors.push("counts");
     }
@@ -1878,8 +2428,17 @@
       if (!validateInvite(event, playerKeys) || ids.has(`invite:${event.id}`)) errors.push("invite");
       ids.add(`invite:${event.id}`);
     }
+    const captureIds = new Set();
+    for (const capture of data.leaderboardCaptures || []) {
+      if (!validateCapture(capture) || captureIds.has(capture.id)) errors.push("leaderboardCapture");
+      captureIds.add(capture.id);
+    }
+    for (const entry of data.leaderboardEntries || []) {
+      if (!validateLeaderboardEntry(entry, playerKeys, captureIds) || ids.has(`leaderboard:${entry.id}`)) errors.push("leaderboardEntry");
+      ids.add(`leaderboard:${entry.id}`);
+    }
     if (backup.checksum?.algorithm === "SHA-256") {
-      const actual = await sha256(JSON.stringify(stableData(data)));
+      const actual = await sha256(JSON.stringify(stableData(data, backup.schemaVersion)));
       if (actual && actual !== backup.checksum.value) errors.push("checksum");
     }
     return { valid: errors.length === 0, errors: [...new Set(errors)] };
@@ -1897,7 +2456,22 @@
     }
     const validation = await validateBackup(backup);
     if (!validation.valid) throw new Error(`invalid_backup:${validation.errors.join(",")}`);
-    return backup;
+    if (backup.schemaVersion === app.config.schemaVersion) return backup;
+    const data = stableData(backup.data);
+    return {
+      ...backup,
+      schemaVersion: app.config.schemaVersion,
+      pluginVersion: app.config.version,
+      counts: {
+        players: data.players.length,
+        profileObservations: data.profileObservations.length,
+        inviteEvents: data.inviteEvents.length,
+        leaderboardCaptures: data.leaderboardCaptures.length,
+        leaderboardEntries: data.leaderboardEntries.length
+      },
+      checksum: null,
+      data
+    };
   }
 
   function identityMatches(source, identity) {
@@ -1911,6 +2485,8 @@
     const currentPlayerKeys = new Set(current.players.map((record) => record.playerKey));
     const currentObservationIds = new Set(current.profileObservations.map((record) => record.id));
     const currentInviteIds = new Set(current.inviteEvents.map((record) => record.id));
+    const currentCaptureIds = new Set((current.leaderboardCaptures || []).map((record) => record.id));
+    const currentEntryIds = new Set((current.leaderboardEntries || []).map((record) => record.id));
     return {
       source: backup.source,
       exportedAt: backup.exportedAt,
@@ -1920,7 +2496,9 @@
       duplicates: {
         players: backup.data.players.filter((record) => currentPlayerKeys.has(record.playerKey)).length,
         profileObservations: backup.data.profileObservations.filter((record) => currentObservationIds.has(record.id)).length,
-        inviteEvents: backup.data.inviteEvents.filter((record) => currentInviteIds.has(record.id)).length
+        inviteEvents: backup.data.inviteEvents.filter((record) => currentInviteIds.has(record.id)).length,
+        leaderboardCaptures: backup.data.leaderboardCaptures.filter((record) => currentCaptureIds.has(record.id)).length,
+        leaderboardEntries: backup.data.leaderboardEntries.filter((record) => currentEntryIds.has(record.id)).length
       }
     };
   }
@@ -1936,6 +2514,8 @@
           addedObservations: data.profileObservations.length,
           skippedObservations: 0,
           addedInvites: data.inviteEvents.length,
+          addedLeaderboardCaptures: data.leaderboardCaptures.length,
+          addedLeaderboardEntries: data.leaderboardEntries.length,
           skippedInvites: 0,
           replaced: true
         }
@@ -1977,20 +2557,23 @@
       }
     }
     function mergeEvents(name) {
+      const hasPlayerKey = name !== "leaderboardCaptures";
       const existing = new Map(
-        current[name].map((record) => [
-          record.id,
-          { ...core.structuredCloneSafe(record), playerKey: keyUpgrades.get(record.playerKey) || record.playerKey }
-        ])
+        (current[name] || []).map((record) => {
+          const next = core.structuredCloneSafe(record);
+          if (hasPlayerKey) next.playerKey = keyUpgrades.get(record.playerKey) || record.playerKey;
+          return [record.id, next];
+        })
       );
       let added = 0;
       let skipped = 0;
-      for (const record of incoming[name]) {
+      for (const record of incoming[name] || []) {
         if (existing.has(record.id)) {
           skipped += 1;
           continue;
         }
-        const next = { ...core.structuredCloneSafe(record), playerKey: remap.get(record.playerKey) || record.playerKey };
+        const next = core.structuredCloneSafe(record);
+        if (hasPlayerKey) next.playerKey = remap.get(record.playerKey) || record.playerKey;
         existing.set(next.id, next);
         added += 1;
       }
@@ -1998,11 +2581,15 @@
     }
     const observations = mergeEvents("profileObservations");
     const invites = mergeEvents("inviteEvents");
+    const captures = mergeEvents("leaderboardCaptures");
+    const leaderboardEntries = mergeEvents("leaderboardEntries");
     return {
       data: {
         players: [...players.values()],
         profileObservations: observations.values,
-        inviteEvents: invites.values
+        inviteEvents: invites.values,
+        leaderboardCaptures: captures.values,
+        leaderboardEntries: leaderboardEntries.values
       },
       report: {
         addedPlayers,
@@ -2010,7 +2597,11 @@
         addedObservations: observations.added,
         skippedObservations: observations.skipped,
         addedInvites: invites.added,
-        skippedInvites: invites.skipped
+        skippedInvites: invites.skipped,
+        addedLeaderboardCaptures: captures.added,
+        skippedLeaderboardCaptures: captures.skipped,
+        addedLeaderboardEntries: leaderboardEntries.added,
+        skippedLeaderboardEntries: leaderboardEntries.skipped
       }
     };
   }
@@ -2077,7 +2668,27 @@
         event.recruiter?.guildName
       ])
     ];
-    return { players: csv(players), profileObservations: csv(observations), inviteEvents: csv(invites) };
+    const leaderboardCaptures = [
+      ["id", "typeHrid", "categoryHrid", "filterKey", "requestedAt", "capturedAt", "revision", "rowCount", "columnNames"],
+      ...(data.leaderboardCaptures || []).map((event) => [
+        event.id, event.typeHrid, event.categoryHrid, event.filterKey, event.requestedAt, event.capturedAt,
+        event.revision, event.rowCount, (event.columnNames || []).join(" | ")
+      ])
+    ];
+    const leaderboardEntries = [
+      ["id", "captureId", "playerKey", "name", "typeHrid", "categoryHrid", "filterKey", "rank", "value1", "value2", "capturedAt"],
+      ...(data.leaderboardEntries || []).map((event) => [
+        event.id, event.captureId, event.playerKey, event.name, event.typeHrid, event.categoryHrid,
+        event.filterKey, event.rank, event.value1, event.value2, event.capturedAt
+      ])
+    ];
+    return {
+      players: csv(players),
+      profileObservations: csv(observations),
+      inviteEvents: csv(invites),
+      leaderboardCaptures: csv(leaderboardCaptures),
+      leaderboardEntries: csv(leaderboardEntries)
+    };
   }
 
   function downloadText(text, filename, type = "application/json;charset=utf-8") {
@@ -2486,9 +3097,11 @@
     .mwi-git-player:hover { background: rgba(76,201,192,.055); }
     .mwi-git-player[aria-selected="true"] { background: rgba(87,213,202,.10); box-shadow: inset 2px 0 var(--mwi-git-scan); }
     .mwi-git-player-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--mwi-git-muted); }
-    [data-status="no_guild"] .mwi-git-player-dot { background: var(--mwi-git-scan); box-shadow: 0 0 9px rgba(76,201,192,.5); }
-    [data-status="no_guild"][data-activity-state="unrecorded"] .mwi-git-player-dot { background: #f3f6fa; box-shadow: 0 0 7px rgba(243,246,250,.28); }
-    [data-status="has_guild"] .mwi-git-player-dot { background: var(--mwi-git-shield); }
+    [data-engagement-state="active"] .mwi-git-player-dot { background: #48d087; box-shadow: 0 0 9px rgba(72,208,135,.45); }
+    [data-engagement-state="signal"] .mwi-git-player-dot { background: #55c7e8; box-shadow: 0 0 8px rgba(85,199,232,.4); }
+    [data-engagement-state="observing"] .mwi-git-player-dot { background: #f3f6fa; box-shadow: 0 0 7px rgba(243,246,250,.28); }
+    [data-engagement-state="no_progress"] .mwi-git-player-dot { background: #ef9a4b; box-shadow: 0 0 8px rgba(239,154,75,.38); }
+    [data-status="has_guild"] .mwi-git-player-dot { background: #ef646f; }
     [data-status="invited"] .mwi-git-player-dot { background: var(--mwi-git-warning); }
     [data-status="invite_failed"] .mwi-git-player-dot { background: var(--mwi-git-error); }
     [data-status="stale"] .mwi-git-player-dot { opacity: .42; }
@@ -2534,8 +3147,11 @@
     }
     .mwi-git-guild-marker[data-state="joined"] { color: #ef646f; }
     .mwi-git-guild-marker[data-state="own_guild"] { color: #aa83f2; }
-    .mwi-git-guild-marker[data-state="none"] { color: #48d087; }
-    .mwi-git-guild-marker[data-state="none_unrecorded"] { color: #f3f6fa; }
+    .mwi-git-guild-marker[data-state="active"] { color: #48d087; }
+    .mwi-git-guild-marker[data-state="signal"] { color: #55c7e8; }
+    .mwi-git-guild-marker[data-state="observing"] { color: #f3f6fa; }
+    .mwi-git-guild-marker[data-state="no_progress"] { color: #ef9a4b; }
+    .mwi-git-guild-marker[data-state="stale"] { color: #818b9d; }
     .mwi-git-guild-marker[data-state="inviting"] { color: #efbf4d; }
     .mwi-git-guild-marker[data-state="unchecked"] { color: #818b9d; }
     .mwi-git-guild-marker[data-state="unchecked"]::after { opacity: .38; }
@@ -2951,14 +3567,21 @@
 
   function summaryMaps(data) {
     const byName = new Map();
+    const observationLists = new Map();
     for (const player of data.players || []) {
       byName.set(core.normalizeName(player.currentName), player);
       for (const alias of player.nameAliases || []) byName.set(core.normalizeName(alias), player);
     }
+    for (const event of data.profileObservations || []) {
+      if (!observationLists.has(event.playerKey)) observationLists.set(event.playerKey, []);
+      observationLists.get(event.playerKey).push(event);
+    }
     return {
       byName,
       invites: latestByPlayer(data.inviteEvents, "attemptedAt"),
-      observations: latestByPlayer(data.profileObservations, "viewedAt")
+      observations: latestByPlayer(data.profileObservations, "viewedAt"),
+      observationLists,
+      leaderboardEntries: data.leaderboardEntries || []
     };
   }
 
@@ -2996,19 +3619,16 @@
     return Boolean(playerGuildName && ownGuildName && playerGuildName === ownGuildName);
   }
 
-  function guildMarkerState(player, invite, identity, observation) {
+  function guildMarkerState(player, invite, identity, observation, assessment) {
     if (isOwnGuild(player, identity)) return "own_guild";
     if (player?.latestGuild?.state === "joined") return "joined";
     if (player?.latestGuild?.state === "none" && ["pending", "sent"].includes(invite?.outcome)) return "inviting";
-    if (player?.latestGuild?.state === "none" && core.activityStateForObservation(observation) === "unrecorded") {
-      return "none_unrecorded";
-    }
-    if (player?.latestGuild?.state === "none") return "none";
+    if (player?.latestGuild?.state === "none") return assessment?.state || "observing";
     return "unchecked";
   }
 
-  function titleFor(player, observation, invite, identity, i18n) {
-    const state = guildMarkerState(player, invite, identity, observation);
+  function titleFor(player, observation, invite, identity, i18n, assessment) {
+    const state = guildMarkerState(player, invite, identity, observation, assessment);
     const parts = [
       state === "own_guild"
         ? i18n.t("ownGuild")
@@ -3016,10 +3636,8 @@
         ? i18n.t("hasGuild")
         : state === "inviting"
           ? i18n.t("inviting")
-        : state === "none_unrecorded"
-          ? i18n.t("noGuildActivityUnrecorded")
-        : state === "none"
-          ? i18n.t("noGuild")
+        : ["active", "signal", "observing", "no_progress", "stale"].includes(state)
+          ? `${i18n.t("noGuild")} · ${i18n.engagementState(state)}`
           : i18n.t("notChecked")
     ];
     if (state === "joined" && player.latestGuild?.guildName) parts.push(player.latestGuild.guildName);
@@ -3032,6 +3650,7 @@
     if (state === "inviting" && invite?.attemptedAt) {
       parts.push(`${i18n.t("inviteAttempt")} ${app.dom.formatDate(invite.attemptedAt, i18n.language)}`);
     }
+    if (assessment?.latestEvidence) parts.push(i18n.evidence(assessment.latestEvidence));
     return parts.join("\n");
   }
 
@@ -3076,8 +3695,11 @@
       const player = maps.byName.get(normalizedName) || null;
       const observation = player ? maps.observations.get(player.playerKey) : null;
       const invite = player ? maps.invites.get(player.playerKey) : null;
-      const state = guildMarkerState(player, invite, identity, observation);
-      const title = titleFor(player, observation, invite, identity, i18n);
+      const assessment = player
+        ? core.engagementAssessment(player, maps.observationLists.get(player.playerKey), maps.leaderboardEntries)
+        : null;
+      const state = guildMarkerState(player, invite, identity, observation, assessment);
+      const title = titleFor(player, observation, invite, identity, i18n, assessment);
       let marker = cell.querySelector?.('.mwi-git-guild-marker[data-location="leaderboard"]') || null;
       if (!marker) marker = app.dom.element("span", {
         className: "mwi-git-guild-marker",
@@ -3196,8 +3818,11 @@
       const player = maps.byName.get(core.normalizeName(name)) || null;
       const observation = player ? maps.observations.get(player.playerKey) : null;
       const invite = player ? maps.invites.get(player.playerKey) : null;
-      const state = app.leaderboardDecorations.guildMarkerState(player, invite, identity, observation);
-      const title = app.leaderboardDecorations.titleFor(player, observation, invite, identity, i18n);
+      const assessment = player
+        ? core.engagementAssessment(player, maps.observationLists.get(player.playerKey), maps.leaderboardEntries)
+        : null;
+      const state = app.leaderboardDecorations.guildMarkerState(player, invite, identity, observation, assessment);
+      const title = app.leaderboardDecorations.titleFor(player, observation, invite, identity, i18n, assessment);
       let marker = Array.from(nameNode.children || []).find(
         (child) => child.classList?.contains("mwi-git-guild-marker") && child.dataset.location === "chat"
       );
@@ -3455,7 +4080,7 @@
     dom.clear(container);
     const invites = latestInviteMap(data.inviteEvents);
     const observations = latestObservationMap(data.profileObservations);
-    const players = core.filterPlayers(data.players, options, data.inviteEvents, data.profileObservations);
+    const players = core.filterPlayers(data.players, options, data.inviteEvents, data.profileObservations, data.leaderboardEntries);
     if (!players.length) {
       container.append(dom.element("div", { className: "mwi-git-empty", text: i18n.t("emptyPlayers") }));
       return players;
@@ -3464,13 +4089,19 @@
       const invite = invites.get(player.playerKey);
       const activityState = core.activityStateForObservation(observations.get(player.playerKey));
       const status = core.playerStatus(player, invite, Date.now(), app.config.staleProfileMs);
+      const assessment = core.engagementAssessment(
+        player,
+        data.profileObservations.filter((event) => event.playerKey === player.playerKey),
+        data.leaderboardEntries
+      );
       const button = dom.element("button", {
         className: "mwi-git-player",
         type: "button",
         attributes: {
           "aria-selected": String(player.playerKey === selectedKey),
           "data-status": status,
-          "data-activity-state": activityState
+          "data-activity-state": activityState,
+          "data-engagement-state": assessment.state
         }
       });
       const dot = dom.element("span", { className: "mwi-git-player-dot", attributes: { "aria-hidden": "true" } });
@@ -3479,12 +4110,14 @@
         dom.element("span", { className: "mwi-git-player-name", text: player.currentName }),
         dom.element("span", {
           className: "mwi-git-player-meta",
-          text: `${guildLabel(player, i18n)} · ${i18n.activityState(activityState)}`
+          text: player.latestGuild?.state === "none"
+            ? `${guildLabel(player, i18n)} · ${i18n.engagementState(assessment.state)}`
+            : guildLabel(player, i18n)
         })
       );
       const time = dom.element("span", {
         className: "mwi-git-player-time",
-        text: dom.formatDate(player.lastViewedAt || player.lastInvitedAt, i18n.language, { year: undefined })
+        text: dom.formatDate(player.lastViewedAt || player.lastLeaderboardSeenAt || player.lastInvitedAt, i18n.language, { year: undefined })
       });
       button.append(dot, copy, time);
       button.addEventListener("click", () => onSelect(player.playerKey));
@@ -3513,9 +4146,19 @@
     }
     const head = dom.element("div", { className: "mwi-git-detail-head" });
     const title = dom.element("div");
+    const assessment = core.engagementAssessment(
+      player,
+      data.profileObservations.filter((event) => event.playerKey === player.playerKey),
+      data.leaderboardEntries
+    );
     title.append(
       dom.element("h3", { text: player.currentName }),
-      dom.element("div", { className: "mwi-git-detail-guild", text: guildLabel(player, i18n) })
+      dom.element("div", {
+        className: "mwi-git-detail-guild",
+        text: player.latestGuild?.state === "none"
+          ? `${guildLabel(player, i18n)} · ${i18n.engagementState(assessment.state)}`
+          : guildLabel(player, i18n)
+      })
     );
     const remove = dom.element("button", {
       className: "mwi-git-button mwi-git-button--danger",
@@ -3524,26 +4167,39 @@
     });
     remove.addEventListener("click", onDelete);
     head.append(title, remove);
+    const profileEvents = data.profileObservations
+      .filter((event) => event.playerKey === player.playerKey)
+      .sort((a, b) => Date.parse(a.viewedAt || 0) - Date.parse(b.viewedAt || 0));
+    const observationsWithEvidence = profileEvents.map((event, index) => ({
+      ...event,
+      changeEvidence: index > 0 ? core.profileEvidenceBetween(profileEvents[index - 1], event).evidence : [],
+      timelineType: "observation",
+      timelineAt: event.viewedAt
+    }));
     const events = [
-      ...data.profileObservations
-        .filter((event) => event.playerKey === player.playerKey)
-        .map((event) => ({ ...event, timelineType: "observation", timelineAt: event.viewedAt })),
+      ...observationsWithEvidence,
       ...data.inviteEvents
         .filter((event) => event.playerKey === player.playerKey)
-        .map((event) => ({ ...event, timelineType: "invite", timelineAt: event.attemptedAt || event.detectedAt }))
+        .map((event) => ({ ...event, timelineType: "invite", timelineAt: event.attemptedAt || event.detectedAt })),
+      ...(data.leaderboardEntries || [])
+        .filter((event) => event.playerKey === player.playerKey)
+        .map((event) => ({ ...event, timelineType: "leaderboard", timelineAt: event.capturedAt }))
     ].sort((a, b) => Date.parse(b.timelineAt || 0) - Date.parse(a.timelineAt || 0));
     const list = dom.element("ol", { className: "mwi-git-timeline" });
     for (const event of events) {
       const invite = event.timelineType === "invite";
+      const leaderboard = event.timelineType === "leaderboard";
       const item = dom.element("li", { className: `mwi-git-event${invite ? " mwi-git-event--invite" : ""}` });
       const eventTitle = dom.element("div", { className: "mwi-git-event-title" });
       eventTitle.append(
-        dom.element("span", { text: invite ? i18n.t("inviteAttempt") : i18n.t("viewed") }),
+        dom.element("span", { text: invite ? i18n.t("inviteAttempt") : leaderboard ? i18n.t("leaderboardCaptured") : i18n.t("viewed") }),
         dom.element("time", { className: "mwi-git-event-time", text: dom.formatDate(event.timelineAt, i18n.language) })
       );
       const detail = invite
         ? `${i18n.t("outcome")}：${i18n.t(event.outcome)}`
-        : observationDetail(event, i18n);
+        : leaderboard
+          ? `${i18n.category(event.categoryHrid)} · ${i18n.t("rank")} ${event.rank ?? "—"} · ${event.value1 ?? "—"}`
+          : [observationDetail(event, i18n), event.changeEvidence?.length ? i18n.evidence(event.changeEvidence[0]) : ""].filter(Boolean).join(" · ");
       item.append(eventTitle, dom.element("div", { className: "mwi-git-event-detail", text: detail }));
       list.append(item);
     }
@@ -3562,7 +4218,7 @@
   const dom = app.dom;
 
   function createPanel(controller, i18n, initialView = {}) {
-    let data = { players: [], profileObservations: [], inviteEvents: [] };
+    let data = { players: [], profileObservations: [], inviteEvents: [], leaderboardCaptures: [], leaderboardEntries: [] };
     let selectedKey = initialView.selectedKey || null;
     let identity = null;
     let settingsOpen = Boolean(initialView.settingsOpen);
@@ -3571,6 +4227,7 @@
       query: initialView.query || "",
       guildState: initialView.guildState || "all",
       activityState: initialView.activityState || "all",
+      engagementState: initialView.engagementState || "all",
       category: initialView.category || "all",
       inviteOutcome: initialView.inviteOutcome || "all",
       days: initialView.days || "all",
@@ -3665,6 +4322,10 @@
     for (const [value, key] of [["all", "allActivityStates"], ["work", "activityWork"], ["offline", "activityOffline"], ["none", "activityNone"], ["unrecorded", "activityUnrecorded"]]) {
       activityState.append(dom.element("option", { text: i18n.t(key), attributes: { value } }));
     }
+    const engagementState = dom.element("select", { className: "mwi-git-select", attributes: { "aria-label": i18n.t("allEngagementStates") } });
+    for (const [value, key] of [["all", "allEngagementStates"], ["active", "engagementActive"], ["signal", "engagementSignal"], ["observing", "engagementObserving"], ["no_progress", "engagementNoProgress"], ["stale", "engagementStale"]]) {
+      engagementState.append(dom.element("option", { text: i18n.t(key), attributes: { value } }));
+    }
     const category = dom.element("select", { className: "mwi-git-select", attributes: { "aria-label": i18n.t("allCategories") } });
     const inviteOutcome = dom.element("select", { className: "mwi-git-select", attributes: { "aria-label": i18n.t("allInviteOutcomes") } });
     inviteOutcome.append(dom.element("option", { text: i18n.t("allInviteOutcomes"), attributes: { value: "all" } }));
@@ -3682,10 +4343,11 @@
     search.value = settings.query;
     guildState.value = settings.guildState;
     activityState.value = settings.activityState;
+    engagementState.value = settings.engagementState;
     inviteOutcome.value = settings.inviteOutcome;
     days.value = settings.days;
     sort.value = settings.sort;
-    toolbar.append(search, guildState, activityState, category, inviteOutcome, days, sort);
+    toolbar.append(search, guildState, activityState, engagementState, category, inviteOutcome, days, sort);
 
     const actions = dom.element("div", { className: "mwi-git-actions" });
     const exportJson = dom.element("button", { className: "mwi-git-button", text: i18n.t("exportJson"), type: "button" });
@@ -3748,7 +4410,10 @@
     }
 
     function render() {
-      const categories = [...new Set(data.profileObservations.map((event) => event.leaderboard?.categoryHrid).filter(Boolean))].sort();
+      const categories = [...new Set([
+        ...data.profileObservations.map((event) => event.leaderboard?.categoryHrid),
+        ...(data.leaderboardEntries || []).map((event) => event.categoryHrid)
+      ].filter(Boolean))].sort();
       const previousCategory = settings.category;
       category.replaceChildren(dom.element("option", { text: i18n.t("allCategories"), attributes: { value: "all" } }));
       for (const value of categories) category.append(dom.element("option", { text: i18n.category(value), attributes: { value } }));
@@ -3769,7 +4434,8 @@
       summary.textContent = i18n.summary({
         players: data.players.length,
         observations: data.profileObservations.length,
-        invites: data.inviteEvents.length
+        invites: data.inviteEvents.length,
+        leaderboardCaptures: (data.leaderboardCaptures || []).length
       });
       identityLabel.textContent = identity
         ? identity.characterName
@@ -3800,6 +4466,7 @@
     search.addEventListener("input", () => { settings.query = search.value; render(); });
     guildState.addEventListener("change", () => { settings.guildState = guildState.value; render(); });
     activityState.addEventListener("change", () => { settings.activityState = activityState.value; render(); });
+    engagementState.addEventListener("change", () => { settings.engagementState = engagementState.value; render(); });
     category.addEventListener("change", () => { settings.category = category.value; render(); });
     inviteOutcome.addEventListener("change", () => { settings.inviteOutcome = inviteOutcome.value; render(); });
     days.addEventListener("change", () => { settings.days = days.value; render(); });
@@ -3865,7 +4532,7 @@
       launcher.hidden = true;
     }
     function setData(next) {
-      data = next || { players: [], profileObservations: [], inviteEvents: [] };
+      data = next || { players: [], profileObservations: [], inviteEvents: [], leaderboardCaptures: [], leaderboardEntries: [] };
       render();
     }
     function setIdentity(next) {
@@ -3927,7 +4594,7 @@
   let namespace = null;
   let panel = null;
   let sidebar = null;
-  let currentData = { players: [], profileObservations: [], inviteEvents: [] };
+  let currentData = { players: [], profileObservations: [], inviteEvents: [], leaderboardCaptures: [], leaderboardEntries: [] };
   let observer = null;
   let protocolChain = Promise.resolve();
   const queuedActions = [];
@@ -3942,7 +4609,7 @@
 
   async function refresh() {
     if (!namespace) {
-      currentData = { players: [], profileObservations: [], inviteEvents: [] };
+      currentData = { players: [], profileObservations: [], inviteEvents: [], leaderboardCaptures: [], leaderboardEntries: [] };
     } else {
       currentData = await repository.snapshot(namespace);
     }
@@ -4002,6 +4669,11 @@
     }
     if (action.type === "record_observation") {
       await repository.recordObservation(namespace, action.player, action.observation);
+      await refresh();
+      return;
+    }
+    if (action.type === "record_leaderboard") {
+      await repository.recordLeaderboard(namespace, action.players, action.capture, action.entries);
       await refresh();
       return;
     }
@@ -4086,6 +4758,8 @@
       app.importExport.downloadText(exports.players, `${base}-players.csv`, "text/csv;charset=utf-8");
       root.setTimeout(() => app.importExport.downloadText(exports.profileObservations, `${base}-profile-observations.csv`, "text/csv;charset=utf-8"), 100);
       root.setTimeout(() => app.importExport.downloadText(exports.inviteEvents, `${base}-invite-events.csv`, "text/csv;charset=utf-8"), 200);
+      root.setTimeout(() => app.importExport.downloadText(exports.leaderboardCaptures, `${base}-leaderboard-captures.csv`, "text/csv;charset=utf-8"), 300);
+      root.setTimeout(() => app.importExport.downloadText(exports.leaderboardEntries, `${base}-leaderboard-entries.csv`, "text/csv;charset=utf-8"), 400);
     },
     async prepareImport(text) {
       if (!identity || !namespace) throw new Error("identity_unavailable");
@@ -4107,6 +4781,8 @@
           addedPlayers: backup.data.players.length,
           addedObservations: backup.data.profileObservations.length,
           addedInvites: backup.data.inviteEvents.length,
+          addedLeaderboardCaptures: backup.data.leaderboardCaptures.length,
+          addedLeaderboardEntries: backup.data.leaderboardEntries.length,
           replaced: true
         };
       }
