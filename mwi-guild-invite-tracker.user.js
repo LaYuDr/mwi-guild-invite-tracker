@@ -2,7 +2,7 @@
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
 // @namespace    https://github.com/layu/mwi-guild-invite-tracker
-// @version      0.5.0
+// @version      0.5.1
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
 // @description:en Passively records leaderboard profile views, guild status, and native guild invite outcomes
 // @match        https://www.milkywayidle.com/*
@@ -21,7 +21,7 @@
 
   app.config = Object.freeze({
     appId: "mwi-guild-invite-tracker",
-    version: "0.5.0",
+    version: "0.5.1",
     schemaVersion: 3,
     databaseName: "mwi-guild-invite-tracker",
     databaseVersion: 2,
@@ -3071,16 +3071,16 @@
     }
     .mwi-git-player:hover { background: rgba(76,201,192,.055); }
     .mwi-git-player[aria-selected="true"] { background: rgba(87,213,202,.10); box-shadow: inset 2px 0 var(--mwi-git-scan); }
-    .mwi-git-player-dot { display: none; width: 6px; height: 6px; border-radius: 50%; }
-    [data-engagement-state="online"] .mwi-git-player-dot { display: block; background: #48d087; box-shadow: 0 0 9px rgba(72,208,135,.45); }
-    [data-engagement-state="offline"] .mwi-git-player-dot { display: block; background: #f3f6fa; box-shadow: 0 0 7px rgba(243,246,250,.28); }
-    [data-status="has_guild"] .mwi-git-player-dot { display: block; background: #ef646f; }
-    [data-status="invited"] .mwi-git-player-dot { display: block; background: var(--mwi-git-warning); }
-    [data-status="invite_failed"] .mwi-git-player-dot { display: block; background: var(--mwi-git-error); }
-    .mwi-git-player-copy { min-width: 0; }
+    .mwi-git-player-dot { grid-column: 1; display: block; width: 6px; height: 6px; border-radius: 50%; visibility: hidden; }
+    [data-engagement-state="online"] .mwi-git-player-dot { visibility: visible; background: #48d087; box-shadow: 0 0 9px rgba(72,208,135,.45); }
+    [data-engagement-state="offline"] .mwi-git-player-dot { visibility: visible; background: #f3f6fa; box-shadow: 0 0 7px rgba(243,246,250,.28); }
+    [data-status="has_guild"] .mwi-git-player-dot { visibility: visible; background: #ef646f; }
+    [data-status="invited"] .mwi-git-player-dot { visibility: visible; background: var(--mwi-git-warning); }
+    [data-status="invite_failed"] .mwi-git-player-dot { visibility: visible; background: var(--mwi-git-error); }
+    .mwi-git-player-copy { grid-column: 2; min-width: 0; }
     .mwi-git-player-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; font-size: 12px; }
     .mwi-git-player-meta { display: block; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--mwi-git-muted); font-size: 10px; }
-    .mwi-git-player-time { color: var(--mwi-git-muted); font: 10px/1.25 ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; }
+    .mwi-git-player-time { grid-column: 3; color: var(--mwi-git-muted); font: 10px/1.25 ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; white-space: nowrap; }
     .mwi-git-empty { padding: 24px 18px; color: var(--mwi-git-muted); font-size: 12px; line-height: 1.6; text-align: center; }
     .mwi-git-detail-head { display: flex; gap: 10px; align-items: center; padding: 10px 14px; border-bottom: 1px solid rgba(49,66,87,.7); }
     .mwi-git-detail-head h3 { min-width: 0; flex: 1; margin: 0; overflow: hidden; text-overflow: ellipsis; font-size: 15px; }
