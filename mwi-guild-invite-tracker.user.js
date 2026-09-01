@@ -2,7 +2,7 @@
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
 // @namespace    https://github.com/layu/mwi-guild-invite-tracker
-// @version      0.5.1
+// @version      0.5.2
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
 // @description:en Passively records leaderboard profile views, guild status, and native guild invite outcomes
 // @match        https://www.milkywayidle.com/*
@@ -431,16 +431,16 @@
     return { comparable: true, evidence };
   }
 
-  function engagementAssessment(player, _observations, leaderboardEntries, now = Date.now(), options = {}) {
-    const windowMs = Number(options.windowMs) || app.config.engagementWindowMs;
-    if (player?.latestGuild?.state !== "none") return { state: "not_applicable", evidence: [], comparisonCount: 0 };
-    const entries = (leaderboardEntries || [])
-      .filter((entry) => entry.playerKey === player.playerKey && entry.noGuildConfirmedAtCapture === true)
+  const dataIndexCache = new WeakMap();
+
+  function buildEngagementBase(entries) {
+    const confirmed = (entries || [])
+      .filter((entry) => entry.noGuildConfirmedAtCapture === true)
       .sort((a, b) => Date.parse(a.capturedAt || 0) - Date.parse(b.capturedAt || 0));
     const evidence = [];
     let comparisonCount = 0;
     const series = new Map();
-    for (const entry of entries) {
+    for (const entry of confirmed) {
       const key = leaderboardSeriesKey(entry);
       const previous = series.get(key);
       const result = leaderboardEvidenceBetween(previous, entry);
@@ -449,6 +449,95 @@
       series.set(key, entry);
     }
     evidence.sort((a, b) => Date.parse(b.at || 0) - Date.parse(a.at || 0));
+    return { entries: confirmed, evidence, comparisonCount };
+  }
+
+  function dataIndex(data) {
+    const source = data && typeof data === "object" ? data : {};
+    const cached = dataIndexCache.get(source);
+    if (cached) return cached;
+    const invites = new Map();
+    const observationLists = new Map();
+    const observations = new Map();
+    const leaderboardEntryLists = new Map();
+    const categories = new Map();
+    const ranks = new Map();
+    const categoryRanks = new Map();
+
+    for (const event of source.inviteEvents || []) {
+      const previous = invites.get(event.playerKey);
+      if (!previous || Date.parse(event.attemptedAt || 0) > Date.parse(previous.attemptedAt || 0)) {
+        invites.set(event.playerKey, event);
+      }
+    }
+    for (const event of source.profileObservations || []) {
+      if (!observationLists.has(event.playerKey)) observationLists.set(event.playerKey, []);
+      observationLists.get(event.playerKey).push(event);
+      const category = event.leaderboard?.categoryHrid;
+      if (category) {
+        if (!categories.has(event.playerKey)) categories.set(event.playerKey, new Set());
+        categories.get(event.playerKey).add(category);
+      }
+      const rank = nullableNumber(event.leaderboard?.rank);
+      if (rank !== null) {
+        const current = ranks.get(event.playerKey);
+        if (current === undefined || rank < current) ranks.set(event.playerKey, rank);
+        if (category) {
+          if (!categoryRanks.has(event.playerKey)) categoryRanks.set(event.playerKey, new Map());
+          const playerRanks = categoryRanks.get(event.playerKey);
+          const categoryRank = playerRanks.get(category);
+          if (categoryRank === undefined || rank < categoryRank) playerRanks.set(category, rank);
+        }
+      }
+    }
+    for (const [playerKey, events] of observationLists) {
+      events.sort((a, b) => Date.parse(b.viewedAt || 0) - Date.parse(a.viewedAt || 0));
+      observations.set(playerKey, events[0]);
+    }
+    for (const entry of source.leaderboardEntries || []) {
+      if (!leaderboardEntryLists.has(entry.playerKey)) leaderboardEntryLists.set(entry.playerKey, []);
+      leaderboardEntryLists.get(entry.playerKey).push(entry);
+      if (entry.categoryHrid) {
+        if (!categories.has(entry.playerKey)) categories.set(entry.playerKey, new Set());
+        categories.get(entry.playerKey).add(entry.categoryHrid);
+      }
+      const rank = nullableNumber(entry.rank);
+      if (rank !== null) {
+        const current = ranks.get(entry.playerKey);
+        if (current === undefined || rank < current) ranks.set(entry.playerKey, rank);
+        if (entry.categoryHrid) {
+          if (!categoryRanks.has(entry.playerKey)) categoryRanks.set(entry.playerKey, new Map());
+          const playerRanks = categoryRanks.get(entry.playerKey);
+          const categoryRank = playerRanks.get(entry.categoryHrid);
+          if (categoryRank === undefined || rank < categoryRank) playerRanks.set(entry.categoryHrid, rank);
+        }
+      }
+    }
+    const engagementBases = new Map();
+    for (const [playerKey, entries] of leaderboardEntryLists) {
+      engagementBases.set(playerKey, buildEngagementBase(entries));
+    }
+    const index = {
+      invites,
+      observationLists,
+      observations,
+      leaderboardEntryLists,
+      categories,
+      ranks,
+      categoryRanks,
+      engagementBases
+    };
+    dataIndexCache.set(source, index);
+    return index;
+  }
+
+  function engagementAssessment(player, _observations, leaderboardEntries, now = Date.now(), options = {}) {
+    const windowMs = Number(options.windowMs) || app.config.engagementWindowMs;
+    if (player?.latestGuild?.state !== "none") return { state: "not_applicable", evidence: [], comparisonCount: 0 };
+    const base = options.dataIndex
+      ? options.dataIndex.engagementBases.get(player.playerKey) || { entries: [], evidence: [], comparisonCount: 0 }
+      : buildEngagementBase((leaderboardEntries || []).filter((entry) => entry.playerKey === player.playerKey));
+    const { entries, evidence, comparisonCount } = base;
     const recentEvidence = evidence.find((item) => now - Date.parse(item.at || 0) <= windowMs) || null;
     if (recentEvidence) {
       return { state: "online", evidence, latestEvidence: recentEvidence, comparisonCount };
@@ -464,7 +553,7 @@
     return "unknown";
   }
 
-  function filterPlayers(players, options, invites, observations, leaderboardEntries) {
+  function filterPlayers(players, options, invites, observations, leaderboardEntries, existingIndex = null, now = Date.now()) {
     const query = normalizeName(options && options.query);
     const status = options && options.status;
     const guildState = options && options.guildState;
@@ -475,39 +564,29 @@
     const days = Number(options && options.days) || 0;
     const sort = (options && options.sort) || "lastViewedAt";
     const direction = options && options.direction === "asc" ? 1 : -1;
-    const inviteMap = new Map();
-    for (const event of invites || []) {
-      const previous = inviteMap.get(event.playerKey);
-      if (!previous || Date.parse(event.attemptedAt) > Date.parse(previous.attemptedAt)) {
-        inviteMap.set(event.playerKey, event);
-      }
-    }
-    const observationMap = new Map();
-    for (const event of observations || []) {
-      if (!observationMap.has(event.playerKey)) observationMap.set(event.playerKey, []);
-      observationMap.get(event.playerKey).push(event);
-    }
-    for (const events of observationMap.values()) {
-      events.sort((a, b) => Date.parse(b.viewedAt) - Date.parse(a.viewedAt));
-    }
-    const cutoff = days ? Date.now() - days * 24 * 60 * 60 * 1000 : 0;
+    const index = existingIndex || dataIndex({
+      players: players || [],
+      inviteEvents: invites || [],
+      profileObservations: observations || [],
+      leaderboardEntries: leaderboardEntries || []
+    });
+    const cutoff = days ? now - days * 24 * 60 * 60 * 1000 : 0;
     return (players || [])
       .filter((player) => {
         const haystack = [player.currentName, ...(player.nameAliases || [])].map(normalizeName);
         if (query && !haystack.some((name) => name.includes(query))) return false;
-        const invite = inviteMap.get(player.playerKey);
+        const invite = index.invites.get(player.playerKey);
         if (status && status !== "all" && playerStatus(player, invite) !== status) return false;
         if (guildState && guildState !== "all" && player.latestGuild?.state !== guildState) return false;
         if (inviteOutcome && inviteOutcome !== "all" && invite?.outcome !== inviteOutcome) return false;
-        const playerObservations = observationMap.get(player.playerKey) || [];
+        const playerObservations = index.observationLists.get(player.playerKey) || [];
         const latestActivityState = activityStateForObservation(playerObservations[0]);
         if (activityState && activityState !== "all" && latestActivityState !== activityState) return false;
-        const assessment = engagementAssessment(player, playerObservations, leaderboardEntries, Date.now());
+        const assessment = engagementAssessment(player, playerObservations, leaderboardEntries, now, { dataIndex: index });
         if (engagementState && engagementState !== "all" && assessment.state !== engagementState) return false;
         if (
           category && category !== "all" &&
-          !playerObservations.some((event) => event.leaderboard?.categoryHrid === category) &&
-          !(leaderboardEntries || []).some((entry) => entry.playerKey === player.playerKey && entry.categoryHrid === category)
+          !index.categories.get(player.playerKey)?.has(category)
         ) return false;
         if (cutoff) {
           const latestActivity = Math.max(Date.parse(player.lastViewedAt || 0) || 0, Date.parse(player.lastInvitedAt || 0) || 0);
@@ -518,17 +597,9 @@
       .sort((a, b) => {
         if (sort === "name") return direction * a.currentName.localeCompare(b.currentName);
         if (sort === "rank") {
-          const rankFor = (player) => {
-            const events = observationMap.get(player.playerKey) || [];
-            const relevant = category && category !== "all"
-              ? events.filter((event) => event.leaderboard?.categoryHrid === category)
-              : events;
-            const leaderboardRanks = (leaderboardEntries || [])
-              .filter((entry) => entry.playerKey === player.playerKey && (!category || category === "all" || entry.categoryHrid === category))
-              .map((entry) => Number(entry.rank));
-            const ranks = [...relevant.map((event) => Number(event.leaderboard?.rank)), ...leaderboardRanks].filter(Number.isFinite);
-            return ranks.length ? Math.min(...ranks) : Number.POSITIVE_INFINITY;
-          };
+          const rankFor = (player) => category && category !== "all"
+            ? index.categoryRanks.get(player.playerKey)?.get(category) ?? Number.POSITIVE_INFINITY
+            : index.ranks.get(player.playerKey) ?? Number.POSITIVE_INFINITY;
           return direction * (rankFor(a) - rankFor(b));
         }
         const aValue = Date.parse(a[sort] || 0) || 0;
@@ -566,6 +637,7 @@
     profileEvidenceBetween,
     leaderboardEvidenceBetween,
     leaderboardExperienceValue,
+    dataIndex,
     engagementAssessment,
     playerStatus,
     filterPlayers,
@@ -3056,7 +3128,9 @@
       align-content: start;
     }
     .mwi-git-player {
+      box-sizing: border-box;
       width: 100%;
+      height: 49px;
       display: grid;
       grid-template-columns: 8px minmax(0, 1fr) auto;
       gap: 8px;
@@ -3069,6 +3143,7 @@
       text-align: left;
       cursor: pointer;
     }
+    .mwi-git-player-spacer { width: 1px; pointer-events: none; }
     .mwi-git-player:hover { background: rgba(76,201,192,.055); }
     .mwi-git-player[aria-selected="true"] { background: rgba(87,213,202,.10); box-shadow: inset 2px 0 var(--mwi-git-scan); }
     .mwi-git-player-dot { grid-column: 1; display: block; width: 6px; height: 6px; border-radius: 50%; visibility: hidden; }
@@ -3533,22 +3608,19 @@
   }
 
   function summaryMaps(data) {
+    const index = core.dataIndex(data);
     const byName = new Map();
-    const observationLists = new Map();
     for (const player of data.players || []) {
       byName.set(core.normalizeName(player.currentName), player);
       for (const alias of player.nameAliases || []) byName.set(core.normalizeName(alias), player);
     }
-    for (const event of data.profileObservations || []) {
-      if (!observationLists.has(event.playerKey)) observationLists.set(event.playerKey, []);
-      observationLists.get(event.playerKey).push(event);
-    }
     return {
       byName,
-      invites: latestByPlayer(data.inviteEvents, "attemptedAt"),
-      observations: latestByPlayer(data.profileObservations, "viewedAt"),
-      observationLists,
-      leaderboardEntries: data.leaderboardEntries || []
+      invites: index.invites,
+      observations: index.observations,
+      observationLists: index.observationLists,
+      leaderboardEntries: data.leaderboardEntries || [],
+      dataIndex: index
     };
   }
 
@@ -3663,7 +3735,13 @@
       const observation = player ? maps.observations.get(player.playerKey) : null;
       const invite = player ? maps.invites.get(player.playerKey) : null;
       const assessment = player
-        ? core.engagementAssessment(player, maps.observationLists.get(player.playerKey), maps.leaderboardEntries)
+        ? core.engagementAssessment(
+          player,
+          maps.observationLists.get(player.playerKey),
+          maps.leaderboardEntries,
+          Date.now(),
+          { dataIndex: maps.dataIndex }
+        )
         : null;
       const state = guildMarkerState(player, invite, identity, observation, assessment);
       let marker = cell.querySelector?.('.mwi-git-guild-marker[data-location="leaderboard"]') || null;
@@ -3791,7 +3869,13 @@
       const observation = player ? maps.observations.get(player.playerKey) : null;
       const invite = player ? maps.invites.get(player.playerKey) : null;
       const assessment = player
-        ? core.engagementAssessment(player, maps.observationLists.get(player.playerKey), maps.leaderboardEntries)
+        ? core.engagementAssessment(
+          player,
+          maps.observationLists.get(player.playerKey),
+          maps.leaderboardEntries,
+          Date.now(),
+          { dataIndex: maps.dataIndex }
+        )
         : null;
       const state = app.leaderboardDecorations.guildMarkerState(player, invite, identity, observation, assessment);
       let marker = Array.from(nameNode.children || []).find(
@@ -4052,23 +4136,54 @@
     return i18n.t("guildUnknown");
   }
 
-  function renderPlayerList(container, data, options, selectedKey, i18n, onSelect) {
+  function virtualWindow(total, scrollTop, viewportHeight, rowHeight = 49, overscan = 8) {
+    const safeTotal = Math.max(0, Number(total) || 0);
+    const safeRowHeight = Math.max(1, Number(rowHeight) || 49);
+    const safeOverscan = Math.max(0, Number(overscan) || 0);
+    const firstVisible = Math.max(0, Math.floor((Number(scrollTop) || 0) / safeRowHeight));
+    const visibleCount = Math.max(1, Math.ceil((Number(viewportHeight) || safeRowHeight) / safeRowHeight));
+    const start = Math.max(0, firstVisible - safeOverscan);
+    const end = Math.min(safeTotal, firstVisible + visibleCount + safeOverscan);
+    return { start, end, top: start * safeRowHeight, bottom: Math.max(0, (safeTotal - end) * safeRowHeight) };
+  }
+
+  function spacer(height) {
+    const node = dom.element("div", { className: "mwi-git-player-spacer", attributes: { "aria-hidden": "true" } });
+    node.style.height = `${Math.max(0, height)}px`;
+    return node;
+  }
+
+  function renderPlayerList(container, data, options, selectedKey, i18n, onSelect, view = {}) {
     dom.clear(container);
-    const invites = latestInviteMap(data.inviteEvents);
-    const observations = latestObservationMap(data.profileObservations);
-    const players = core.filterPlayers(data.players, options, data.inviteEvents, data.profileObservations, data.leaderboardEntries);
+    const index = view.dataIndex || core.dataIndex(data);
+    const invites = index.invites;
+    const observations = index.observations;
+    const players = view.players || core.filterPlayers(
+      data.players,
+      options,
+      data.inviteEvents,
+      data.profileObservations,
+      data.leaderboardEntries,
+      index
+    );
     if (!players.length) {
       container.append(dom.element("div", { className: "mwi-git-empty", text: i18n.t("emptyPlayers") }));
       return players;
     }
-    for (const player of players) {
+    const start = Math.max(0, Math.min(players.length, Number(view.start) || 0));
+    const end = Math.max(start, Math.min(players.length, Number.isFinite(view.end) ? Number(view.end) : players.length));
+    const rowHeight = Math.max(1, Number(view.rowHeight) || 49);
+    if (start > 0) container.append(spacer(start * rowHeight));
+    for (const player of players.slice(start, end)) {
       const invite = invites.get(player.playerKey);
       const activityState = core.activityStateForObservation(observations.get(player.playerKey));
       const status = core.playerStatus(player, invite);
       const assessment = core.engagementAssessment(
         player,
-        data.profileObservations.filter((event) => event.playerKey === player.playerKey),
-        data.leaderboardEntries
+        index.observationLists.get(player.playerKey),
+        data.leaderboardEntries,
+        Date.now(),
+        { dataIndex: index }
       );
       const button = dom.element("button", {
         className: "mwi-git-player",
@@ -4099,6 +4214,7 @@
       button.addEventListener("click", () => onSelect(player.playerKey));
       container.append(button);
     }
+    if (end < players.length) container.append(spacer((players.length - end) * rowHeight));
     return players;
   }
 
@@ -4114,7 +4230,7 @@
     return details.filter(Boolean).join(" · ");
   }
 
-  function renderTimeline(container, player, data, i18n, onDelete) {
+  function renderTimeline(container, player, data, i18n, onDelete, existingIndex = null) {
     dom.clear(container);
     if (!player) {
       container.append(dom.element("div", { className: "mwi-git-empty", text: i18n.t("emptyTimeline") }));
@@ -4122,10 +4238,13 @@
     }
     const head = dom.element("div", { className: "mwi-git-detail-head" });
     const title = dom.element("div");
+    const index = existingIndex || core.dataIndex(data);
     const assessment = core.engagementAssessment(
       player,
-      data.profileObservations.filter((event) => event.playerKey === player.playerKey),
-      data.leaderboardEntries
+      index.observationLists.get(player.playerKey),
+      data.leaderboardEntries,
+      Date.now(),
+      { dataIndex: index }
     );
     title.append(
       dom.element("h3", { text: player.currentName }),
@@ -4183,7 +4302,7 @@
     container.append(head, list);
   }
 
-  app.historyView = Object.freeze({ latestInviteMap, latestObservationMap, guildLabel, renderPlayerList, renderTimeline });
+  app.historyView = Object.freeze({ latestInviteMap, latestObservationMap, guildLabel, virtualWindow, renderPlayerList, renderTimeline });
 })(globalThis);
 
 // ---- src/ui/panel-shell.js ----
@@ -4217,6 +4336,14 @@
       players: Boolean(initialCollapsed.players),
       timeline: Boolean(initialCollapsed.timeline)
     };
+    const playerRowHeight = 49;
+    const playerOverscan = 8;
+    let currentIndex = null;
+    let visiblePlayers = [];
+    let playersDirty = true;
+    let timelineDirty = true;
+    let renderPending = true;
+    let scrollFrame = null;
 
     app.styles.installStyles();
     const launcher = dom.element("button", {
@@ -4233,6 +4360,10 @@
     const shell = dom.element("div", { className: "mwi-git-shell" });
     let nativeMode = false;
     let nativeHideHandler = null;
+
+    function isOpen() {
+      return nativeMode ? !panel.hidden : !backdrop.hidden;
+    }
 
     const header = dom.element("header", { className: "mwi-git-header" });
     const titleBlock = dom.element("div", { className: "mwi-git-title-block" });
@@ -4361,6 +4492,14 @@
       toggle.addEventListener("click", () => {
         collapsed[sectionKey] = !collapsed[sectionKey];
         applyState();
+        if (sectionKey === "players") {
+          if (collapsed.players) dom.clear(list);
+          else renderPlayers();
+        }
+        if (sectionKey === "timeline") {
+          if (collapsed.timeline) dom.clear(detailContent);
+          else renderTimeline();
+        }
       });
       root.queueMicrotask(applyState);
       return toggle;
@@ -4385,28 +4524,7 @@
       return data.players.find((player) => player.playerKey === selectedKey) || null;
     }
 
-    function render() {
-      const categories = [...new Set([
-        ...data.profileObservations.map((event) => event.leaderboard?.categoryHrid),
-        ...(data.leaderboardEntries || []).map((event) => event.categoryHrid)
-      ].filter(Boolean))].sort();
-      const previousCategory = settings.category;
-      category.replaceChildren(dom.element("option", { text: i18n.t("allCategories"), attributes: { value: "all" } }));
-      for (const value of categories) category.append(dom.element("option", { text: i18n.category(value), attributes: { value } }));
-      settings.category = categories.includes(previousCategory) ? previousCategory : "all";
-      category.value = settings.category;
-      const visible = app.historyView.renderPlayerList(list, data, settings, selectedKey, i18n, (key) => {
-        selectedKey = key;
-        render();
-      });
-      if (selectedKey && !data.players.some((player) => player.playerKey === selectedKey)) selectedKey = null;
-      if (!selectedKey && visible.length) selectedKey = visible[0].playerKey;
-      app.historyView.renderTimeline(detailContent, selectedPlayer(), data, i18n, async () => {
-        if (!root.confirm(i18n.t("confirmDelete"))) return;
-        await controller.deletePlayer(selectedKey);
-        selectedKey = null;
-        await controller.refresh();
-      });
+    function renderMetadata() {
       summary.textContent = i18n.summary({
         players: data.players.length,
         observations: data.profileObservations.length,
@@ -4418,10 +4536,93 @@
         : i18n.t("waitIdentity");
     }
 
+    function renderCategories() {
+      const categories = [...new Set([
+        ...data.profileObservations.map((event) => event.leaderboard?.categoryHrid),
+        ...(data.leaderboardEntries || []).map((event) => event.categoryHrid)
+      ].filter(Boolean))].sort();
+      const previousCategory = settings.category;
+      category.replaceChildren(dom.element("option", { text: i18n.t("allCategories"), attributes: { value: "all" } }));
+      for (const value of categories) category.append(dom.element("option", { text: i18n.category(value), attributes: { value } }));
+      settings.category = categories.includes(previousCategory) ? previousCategory : "all";
+      category.value = settings.category;
+    }
+
+    function renderPlayers(options = {}) {
+      if (!isOpen() || collapsed.players) {
+        playersDirty = true;
+        return;
+      }
+      currentIndex = currentIndex || app.core.dataIndex(data);
+      if (playersDirty || options.refilter) {
+        visiblePlayers = app.core.filterPlayers(
+          data.players,
+          settings,
+          data.inviteEvents,
+          data.profileObservations,
+          data.leaderboardEntries,
+          currentIndex
+        );
+        playersDirty = false;
+        if (options.resetScroll) listPane.scrollTop = 0;
+      }
+      if (selectedKey && !data.players.some((player) => player.playerKey === selectedKey)) selectedKey = null;
+      if (!selectedKey && visiblePlayers.length) {
+        selectedKey = visiblePlayers[0].playerKey;
+        timelineDirty = true;
+      }
+      const window = app.historyView.virtualWindow(
+        visiblePlayers.length,
+        Math.max(0, listPane.scrollTop - 27),
+        listPane.clientHeight || 600,
+        playerRowHeight,
+        playerOverscan
+      );
+      app.historyView.renderPlayerList(list, data, settings, selectedKey, i18n, (key) => {
+        selectedKey = key;
+        timelineDirty = true;
+        renderPlayers();
+        renderTimeline();
+      }, {
+        players: visiblePlayers,
+        dataIndex: currentIndex,
+        rowHeight: playerRowHeight,
+        ...window
+      });
+    }
+
+    function renderTimeline() {
+      if (!isOpen() || collapsed.timeline) {
+        timelineDirty = true;
+        return;
+      }
+      currentIndex = currentIndex || app.core.dataIndex(data);
+      app.historyView.renderTimeline(detailContent, selectedPlayer(), data, i18n, async () => {
+        if (!root.confirm(i18n.t("confirmDelete"))) return;
+        await controller.deletePlayer(selectedKey);
+        selectedKey = null;
+        await controller.refresh();
+      }, currentIndex);
+      timelineDirty = false;
+    }
+
+    function render() {
+      renderMetadata();
+      if (!isOpen()) {
+        renderPending = true;
+        return;
+      }
+      renderPending = false;
+      renderCategories();
+      renderPlayers({ refilter: playersDirty });
+      if (timelineDirty) renderTimeline();
+    }
+
     function open() {
       if (nativeMode) panel.hidden = false;
       else backdrop.hidden = false;
       launcher.setAttribute("aria-expanded", "true");
+      render();
       controller.refresh();
       search.focus();
     }
@@ -4439,14 +4640,32 @@
     close.addEventListener("click", requestHide);
     backdrop.addEventListener("click", (event) => { if (event.target === backdrop) requestHide(); });
     backdrop.addEventListener("keydown", (event) => { if (event.key === "Escape") requestHide(); });
-    search.addEventListener("input", () => { settings.query = search.value; render(); });
-    guildState.addEventListener("change", () => { settings.guildState = guildState.value; render(); });
-    activityState.addEventListener("change", () => { settings.activityState = activityState.value; render(); });
-    engagementState.addEventListener("change", () => { settings.engagementState = engagementState.value; render(); });
-    category.addEventListener("change", () => { settings.category = category.value; render(); });
-    inviteOutcome.addEventListener("change", () => { settings.inviteOutcome = inviteOutcome.value; render(); });
-    days.addEventListener("change", () => { settings.days = days.value; render(); });
-    sort.addEventListener("change", () => { settings.sort = sort.value; settings.direction = sort.value === "name" || sort.value === "rank" ? "asc" : "desc"; render(); });
+    function renderAfterFilterChange() {
+      playersDirty = true;
+      renderPlayers({ refilter: true, resetScroll: true });
+    }
+    search.addEventListener("input", () => { settings.query = search.value; renderAfterFilterChange(); });
+    guildState.addEventListener("change", () => { settings.guildState = guildState.value; renderAfterFilterChange(); });
+    activityState.addEventListener("change", () => { settings.activityState = activityState.value; renderAfterFilterChange(); });
+    engagementState.addEventListener("change", () => { settings.engagementState = engagementState.value; renderAfterFilterChange(); });
+    category.addEventListener("change", () => { settings.category = category.value; renderAfterFilterChange(); });
+    inviteOutcome.addEventListener("change", () => { settings.inviteOutcome = inviteOutcome.value; renderAfterFilterChange(); });
+    days.addEventListener("change", () => { settings.days = days.value; renderAfterFilterChange(); });
+    sort.addEventListener("change", () => {
+      settings.sort = sort.value;
+      settings.direction = sort.value === "name" || sort.value === "rank" ? "asc" : "desc";
+      renderAfterFilterChange();
+    });
+    listPane.addEventListener("scroll", () => {
+      if (!isOpen() || collapsed.players || scrollFrame !== null) return;
+      const schedule = typeof root.requestAnimationFrame === "function"
+        ? root.requestAnimationFrame.bind(root)
+        : (callback) => root.setTimeout(callback, 0);
+      scrollFrame = schedule(() => {
+        scrollFrame = null;
+        renderPlayers();
+      });
+    });
     exportJson.addEventListener("click", () => controller.exportJson());
     exportCsv.addEventListener("click", () => controller.exportCsv());
     importJson.addEventListener("click", () => file.click());
@@ -4475,7 +4694,7 @@
     });
     function mount() {
       root.document.body.append(launcher, backdrop);
-      render();
+      renderMetadata();
     }
     function mountNative(host, onRequestHide) {
       nativeMode = true;
@@ -4509,11 +4728,16 @@
     }
     function setData(next) {
       data = next || { players: [], profileObservations: [], inviteEvents: [], leaderboardCaptures: [], leaderboardEntries: [] };
-      render();
+      currentIndex = null;
+      playersDirty = true;
+      timelineDirty = true;
+      renderMetadata();
+      if (isOpen()) render();
+      else renderPending = true;
     }
     function setIdentity(next) {
       identity = next;
-      render();
+      renderMetadata();
     }
     function destroy() {
       launcher.remove();
@@ -4528,7 +4752,8 @@
         settingsOpen,
         displayPreferences: { ...displayPreferences },
         collapsed: { ...collapsed },
-        open: nativeMode ? !panel.hidden : !backdrop.hidden
+        open: isOpen(),
+        renderPending
       };
     }
 
