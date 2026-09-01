@@ -2,7 +2,7 @@
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
 // @namespace    https://github.com/layu/mwi-guild-invite-tracker
-// @version      0.4.0
+// @version      0.5.0
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
 // @description:en Passively records leaderboard profile views, guild status, and native guild invite outcomes
 // @match        https://www.milkywayidle.com/*
@@ -21,8 +21,8 @@
 
   app.config = Object.freeze({
     appId: "mwi-guild-invite-tracker",
-    version: "0.4.0",
-    schemaVersion: 2,
+    version: "0.5.0",
+    schemaVersion: 3,
     databaseName: "mwi-guild-invite-tracker",
     databaseVersion: 2,
     bridgeMarker: "__MWI_GUILD_INVITE_TRACKER_BRIDGE_V1__",
@@ -34,8 +34,7 @@
     leaderboardTimeoutMs: 15_000,
     inviteTimeoutMs: 15_000,
     duplicateWindowMs: 1_250,
-    staleProfileMs: 30 * 24 * 60 * 60 * 1000,
-    engagementWindowMs: 30 * 24 * 60 * 60 * 1000,
+    engagementWindowMs: 7 * 24 * 60 * 60 * 1000,
     maxImportBytes: 100 * 1024 * 1024,
     officialSocketHostPattern: /^api(?:-test)?\.milkywayidle(?:cn)?\.com$/i,
     observedTypes: Object.freeze([
@@ -74,7 +73,7 @@
   ]);
 
   const ACTIVITY_STATES = new Set(["work", "offline", "none"]);
-  const ENGAGEMENT_STATES = new Set(["active", "signal", "observing", "no_progress"]);
+  const ENGAGEMENT_STATES = new Set(["online", "offline"]);
   const PROFILE_METRIC_KEYS = Object.freeze([
     "totalLevel",
     "totalExperience",
@@ -413,98 +412,55 @@
     return [entry?.typeHrid || "", entry?.categoryHrid || "", entry?.filterKey || ""].join("|");
   }
 
+  function leaderboardExperienceValue(entry) {
+    if (entry?.noGuildConfirmedAtCapture !== true) return null;
+    return nullableNumber(entry.experienceValue);
+  }
+
   function leaderboardEvidenceBetween(previous, current) {
     if (!previous || !current || leaderboardSeriesKey(previous) !== leaderboardSeriesKey(current)) {
       return { comparable: false, evidence: [] };
     }
-    const evidence = [];
-    for (const key of ["value1", "value2"]) {
-      const delta = positiveDelta(previous[key], current[key]);
-      if (delta !== null) {
-        evidence.push({ source: "leaderboard", kind: "leaderboard", key: current.categoryHrid || key, delta, at: current.capturedAt });
-      }
-    }
+    const before = leaderboardExperienceValue(previous);
+    const after = leaderboardExperienceValue(current);
+    if (before === null || after === null) return { comparable: false, evidence: [] };
+    const delta = positiveDelta(before, after);
+    const evidence = delta === null
+      ? []
+      : [{ source: "leaderboard", kind: "experience", key: current.categoryHrid || "experience", delta, at: current.capturedAt }];
     return { comparable: true, evidence };
   }
 
-  function engagementAssessment(player, observations, leaderboardEntries, now = Date.now(), options = {}) {
-    const staleMs = Number(options.staleMs) || app.config.staleProfileMs;
+  function engagementAssessment(player, _observations, leaderboardEntries, now = Date.now(), options = {}) {
     const windowMs = Number(options.windowMs) || app.config.engagementWindowMs;
     if (player?.latestGuild?.state !== "none") return { state: "not_applicable", evidence: [], comparisonCount: 0 };
-    const guildObservedAt = Date.parse(player.latestGuild.observedAt || 0);
-    if (!guildObservedAt || now - guildObservedAt > staleMs) {
-      return { state: "stale", evidence: [], comparisonCount: 0, guildObservedAt: player.latestGuild.observedAt || null };
-    }
-    const profiles = (observations || [])
-      .filter((event) => event.playerKey === player.playerKey)
-      .sort((a, b) => Date.parse(a.viewedAt || 0) - Date.parse(b.viewedAt || 0));
     const entries = (leaderboardEntries || [])
-      .filter((entry) => entry.playerKey === player.playerKey)
+      .filter((entry) => entry.playerKey === player.playerKey && entry.noGuildConfirmedAtCapture === true)
       .sort((a, b) => Date.parse(a.capturedAt || 0) - Date.parse(b.capturedAt || 0));
     const evidence = [];
     let comparisonCount = 0;
-    let comparisonSpanMs = 0;
-    for (let index = 1; index < profiles.length; index += 1) {
-      const result = profileEvidenceBetween(profiles[index - 1], profiles[index]);
-      if (result.comparable) {
-        comparisonCount += 1;
-        comparisonSpanMs = Math.max(
-          comparisonSpanMs,
-          Date.parse(profiles[index].viewedAt || 0) - Date.parse(profiles[index - 1].viewedAt || 0)
-        );
-      }
-      evidence.push(...result.evidence);
-    }
     const series = new Map();
     for (const entry of entries) {
       const key = leaderboardSeriesKey(entry);
       const previous = series.get(key);
       const result = leaderboardEvidenceBetween(previous, entry);
-      if (result.comparable) {
-        comparisonCount += 1;
-        comparisonSpanMs = Math.max(
-          comparisonSpanMs,
-          Date.parse(entry.capturedAt || 0) - Date.parse(previous.capturedAt || 0)
-        );
-      }
+      if (result.comparable) comparisonCount += 1;
       evidence.push(...result.evidence);
       series.set(key, entry);
-    }
-    const latestProfile = profiles[profiles.length - 1] || null;
-    if (latestProfile?.presenceSnapshot?.state === "online") {
-      evidence.push({ source: "profile", kind: "online", key: "online", delta: null, at: latestProfile.viewedAt });
     }
     evidence.sort((a, b) => Date.parse(b.at || 0) - Date.parse(a.at || 0));
     const recentEvidence = evidence.find((item) => now - Date.parse(item.at || 0) <= windowMs) || null;
     if (recentEvidence) {
-      return { state: "active", evidence, latestEvidence: recentEvidence, comparisonCount, comparisonSpanMs };
+      return { state: "online", evidence, latestEvidence: recentEvidence, comparisonCount };
     }
-    if (
-      latestProfile?.presenceSnapshot?.actionType &&
-      now - Date.parse(latestProfile.viewedAt || 0) <= windowMs
-    ) {
-      return {
-        state: "signal",
-        evidence,
-        latestEvidence: { source: "profile", kind: "action", key: latestProfile.presenceSnapshot.actionType, at: latestProfile.viewedAt },
-        comparisonCount,
-        comparisonSpanMs
-      };
-    }
-    if (comparisonCount >= 1 && comparisonSpanMs >= windowMs) {
-      return { state: "no_progress", evidence, latestEvidence: null, comparisonCount, comparisonSpanMs };
-    }
-    return { state: "observing", evidence, latestEvidence: null, comparisonCount, comparisonSpanMs };
+    if (entries.length >= 1) return { state: "offline", evidence, latestEvidence: null, comparisonCount };
+    return { state: "insufficient", evidence, latestEvidence: null, comparisonCount };
   }
 
-  function playerStatus(player, invite, now, staleMs) {
+  function playerStatus(player, invite) {
     if (player.latestGuild && player.latestGuild.state === "joined") return "has_guild";
     if (invite && ["pending", "sent"].includes(invite.outcome)) return "invited";
-    if (player.latestGuild && player.latestGuild.state === "none") {
-      const observed = Date.parse(player.latestGuild.observedAt || 0);
-      if (observed && now - observed > staleMs) return "stale";
-      return "no_guild";
-    }
+    if (player.latestGuild && player.latestGuild.state === "none") return "no_guild";
     return "unknown";
   }
 
@@ -540,7 +496,7 @@
         const haystack = [player.currentName, ...(player.nameAliases || [])].map(normalizeName);
         if (query && !haystack.some((name) => name.includes(query))) return false;
         const invite = inviteMap.get(player.playerKey);
-        if (status && status !== "all" && playerStatus(player, invite, Date.now(), app.config.staleProfileMs) !== status) return false;
+        if (status && status !== "all" && playerStatus(player, invite) !== status) return false;
         if (guildState && guildState !== "all" && player.latestGuild?.state !== guildState) return false;
         if (inviteOutcome && inviteOutcome !== "all" && invite?.outcome !== inviteOutcome) return false;
         const playerObservations = observationMap.get(player.playerKey) || [];
@@ -609,6 +565,7 @@
     latestInviteForPlayer,
     profileEvidenceBetween,
     leaderboardEvidenceBetween,
+    leaderboardExperienceValue,
     engagementAssessment,
     playerStatus,
     filterPlayers,
@@ -651,23 +608,17 @@
       activityOffline: "离线",
       activityNone: "无",
       activityUnrecorded: "无记录",
-      engagementActive: "近期仍在游玩",
-      engagementSignal: "近期出现活动",
-      engagementObserving: "观察中",
-      engagementNoProgress: "长期未见进展",
-      engagementStale: "资料已过期",
+      engagementOnline: "在线（仍在游玩）",
+      engagementOffline: "离线（未检测到仍在游玩）",
+      engagementInsufficient: "尚无排行榜经验快照",
       engagementNotApplicable: "已有公会 · 不判断",
-      engagementEvidenceOnline: "人物资料显示在线",
-      engagementEvidenceAction: "人物资料显示活动：{action}",
-      engagementEvidenceProfile: "人物资料数值增加",
-      engagementEvidenceLeaderboard: "排行榜经验增加",
+      engagementEvidenceLeaderboard: "7 天内排行榜经验增加",
       leaderboardCaptured: "记录排行榜",
       noGuildActivityUnrecorded: "无公会 · 在线数据无记录",
       guildStatus: "公会状态",
       inviting: "邀请中",
       invited: "已邀请",
       inviteFailed: "邀请失败",
-      stale: "资料已过期",
       unknown: "未确认",
       sortRecentView: "最近查看",
       sortRecentInvite: "最近邀请",
@@ -753,22 +704,16 @@
       activityOffline: "Offline",
       activityNone: "None",
       activityUnrecorded: "Not recorded",
-      engagementActive: "Recently active",
-      engagementSignal: "Recent activity shown",
-      engagementObserving: "Observing",
-      engagementNoProgress: "No progress seen",
-      engagementStale: "Profile stale",
+      engagementOnline: "Online (still playing)",
+      engagementOffline: "Offline (no evidence of continued play)",
+      engagementInsufficient: "No leaderboard experience snapshot yet",
       engagementNotApplicable: "In a guild · not assessed",
-      engagementEvidenceOnline: "Profile showed online",
-      engagementEvidenceAction: "Profile activity: {action}",
-      engagementEvidenceProfile: "Profile value increased",
-      engagementEvidenceLeaderboard: "Leaderboard experience increased",
+      engagementEvidenceLeaderboard: "Leaderboard experience increased within 7 days",
       leaderboardCaptured: "Leaderboard captured",
       guildStatus: "Guild status",
       inviting: "Invitation pending",
       invited: "Invited",
       inviteFailed: "Invite failed",
-      stale: "Profile stale",
       unknown: "Unconfirmed",
       sortRecentView: "Recently viewed",
       sortRecentInvite: "Recently invited",
@@ -983,21 +928,16 @@
       },
       engagementState(value) {
         const key = {
-          active: "engagementActive",
-          signal: "engagementSignal",
-          observing: "engagementObserving",
-          no_progress: "engagementNoProgress",
-          stale: "engagementStale",
+          online: "engagementOnline",
+          offline: "engagementOffline",
+          insufficient: "engagementInsufficient",
           not_applicable: "engagementNotApplicable"
         }[value] || "unknown";
         return messages[language][key] || messages.zh[key] || key;
       },
       evidence(item) {
         if (!item) return "";
-        if (item.kind === "online") return messages[language].engagementEvidenceOnline;
-        if (item.kind === "action") return messages[language].engagementEvidenceAction.replace("{action}", item.key || "—");
-        if (item.source === "leaderboard") return messages[language].engagementEvidenceLeaderboard;
-        return messages[language].engagementEvidenceProfile;
+        return item.source === "leaderboard" ? messages[language].engagementEvidenceLeaderboard : "";
       },
       leaderboardType(value) {
         return mappedName(leaderboardTypeNames, value, language);
@@ -1198,7 +1138,7 @@
 
     function sanitizeLeaderboardRows(rows) {
       if (!Array.isArray(rows)) return [];
-      return rows.slice(0, 100).map((row) => ({
+      return rows.map((row) => ({
         rank: Number.isFinite(Number(row?.rank)) ? Number(row.rank) : null,
         name: typeof row?.name === "string" ? row.name : "",
         characterId: numberOrNull(row?.characterId ?? row?.characterID),
@@ -1632,8 +1572,10 @@
         revision: snapshot.revision,
         rowCount: snapshot.rows.length
       };
-      const entries = snapshot.rows.slice(0, 100).map((row, index) => {
+      const entries = snapshot.rows.map((row, index) => {
         const player = core.playerFromLeaderboard(row, snapshot.capturedAt);
+        const value1 = core.nullableNumber(row.value1);
+        const value2 = core.nullableNumber(row.value2);
         return {
           id: `${captureId}:${index + 1}`,
           captureId,
@@ -1647,8 +1589,9 @@
           filterKey: key,
           columnNames: [...capture.columnNames],
           rank: core.nullableNumber(row.rank),
-          value1: core.nullableNumber(row.value1),
-          value2: core.nullableNumber(row.value2),
+          value1,
+          value2,
+          experienceValue: value2 ?? value1,
           capturedAt: snapshot.capturedAt
         };
       }).filter((entry) => entry.normalizedName);
@@ -1842,6 +1785,14 @@
     return clone;
   }
 
+  function isEligibleLeaderboardEntry(player, entry) {
+    const guildObservedAt = Date.parse(player?.latestGuild?.observedAt || 0);
+    const capturedAt = Date.parse(entry?.capturedAt || 0);
+    return player?.latestGuild?.state === "none" &&
+      guildObservedAt > 0 && capturedAt > 0 && guildObservedAt <= capturedAt &&
+      core.nullableNumber(entry?.experienceValue) !== null;
+  }
+
   function requestPromise(request) {
     return new Promise((resolve, reject) => {
       request.onsuccess = () => resolve(request.result);
@@ -1972,6 +1923,7 @@
       const tx = db.transaction(["players", "profileObservations", "inviteEvents", "leaderboardCaptures", "leaderboardEntries"], "readwrite");
       const done = transactionPromise(tx);
       const mergedPlayers = [];
+      const eligibleEntries = [];
       try {
         for (let index = 0; index < (players || []).length; index += 1) {
           const player = players[index];
@@ -1982,16 +1934,25 @@
             await rewritePlayerKey(tx, namespace, existing.playerKey, merged.playerKey);
             tx.objectStore("players").delete(existing.pk);
           }
-          if (entries[index]) entries[index].playerKey = merged.playerKey;
+          if (entries[index]) {
+            entries[index].playerKey = merged.playerKey;
+            if (isEligibleLeaderboardEntry(merged, entries[index])) {
+              eligibleEntries.push({
+                ...entries[index],
+                noGuildConfirmedAtCapture: true
+              });
+            }
+          }
           tx.objectStore("players").put(dbRecord(namespace, "players", merged));
           mergedPlayers.push(merged);
         }
-        tx.objectStore("leaderboardCaptures").put(dbRecord(namespace, "leaderboardCaptures", capture));
-        for (const entry of entries || []) {
+        const storedCapture = { ...capture, eligibleRowCount: eligibleEntries.length };
+        tx.objectStore("leaderboardCaptures").put(dbRecord(namespace, "leaderboardCaptures", storedCapture));
+        for (const entry of eligibleEntries) {
           tx.objectStore("leaderboardEntries").put(dbRecord(namespace, "leaderboardEntries", entry));
         }
         await done;
-        return { players: mergedPlayers, capture, entries };
+        return { players: mergedPlayers, capture: storedCapture, entries: eligibleEntries };
       } catch (error) {
         tx.abort();
         await done.catch(() => {});
@@ -2179,6 +2140,7 @@
     async function recordLeaderboard(namespace, players, capture, entries) {
       const data = get(namespace);
       const mergedPlayers = [];
+      const eligibleEntries = [];
       for (let offset = 0; offset < (players || []).length; offset += 1) {
         const player = players[offset];
         const index = data.players.findIndex(
@@ -2191,14 +2153,23 @@
             if (event.playerKey === existing.playerKey) event.playerKey = merged.playerKey;
           }
         }
-        if (entries[offset]) entries[offset].playerKey = merged.playerKey;
+        if (entries[offset]) {
+          entries[offset].playerKey = merged.playerKey;
+          if (isEligibleLeaderboardEntry(merged, entries[offset])) {
+            eligibleEntries.push({
+              ...entries[offset],
+              noGuildConfirmedAtCapture: true
+            });
+          }
+        }
         if (index >= 0) data.players[index] = merged;
         else data.players.push(merged);
         mergedPlayers.push(core.structuredCloneSafe(merged));
       }
-      data.leaderboardCaptures.push(core.structuredCloneSafe(capture));
-      data.leaderboardEntries.push(...core.structuredCloneSafe(entries || []));
-      return { players: mergedPlayers, capture, entries };
+      const storedCapture = { ...capture, eligibleRowCount: eligibleEntries.length };
+      data.leaderboardCaptures.push(core.structuredCloneSafe(storedCapture));
+      data.leaderboardEntries.push(...core.structuredCloneSafe(eligibleEntries));
+      return { players: mergedPlayers, capture: storedCapture, entries: eligibleEntries };
     }
     async function recordInvite(namespace, player, invite) {
       const data = get(namespace);
@@ -2381,9 +2352,12 @@
   }
 
   function validateLeaderboardEntry(event, keys, captureIds) {
+    const eligibilityValid = event?.noGuildConfirmedAtCapture === undefined || (
+      event.noGuildConfirmedAtCapture === true && core.nullableNumber(event.experienceValue) !== null
+    );
     return Boolean(
       event && typeof event.id === "string" && keys.has(event.playerKey) && captureIds.has(event.captureId) &&
-      typeof event.name === "string" && core.isIsoDate(event.capturedAt)
+      typeof event.name === "string" && core.isIsoDate(event.capturedAt) && eligibilityValid
     );
   }
 
@@ -2669,17 +2643,18 @@
       ])
     ];
     const leaderboardCaptures = [
-      ["id", "typeHrid", "categoryHrid", "filterKey", "requestedAt", "capturedAt", "revision", "rowCount", "columnNames"],
+      ["id", "typeHrid", "categoryHrid", "filterKey", "requestedAt", "capturedAt", "revision", "rowCount", "eligibleRowCount", "columnNames"],
       ...(data.leaderboardCaptures || []).map((event) => [
         event.id, event.typeHrid, event.categoryHrid, event.filterKey, event.requestedAt, event.capturedAt,
-        event.revision, event.rowCount, (event.columnNames || []).join(" | ")
+        event.revision, event.rowCount, event.eligibleRowCount, (event.columnNames || []).join(" | ")
       ])
     ];
     const leaderboardEntries = [
-      ["id", "captureId", "playerKey", "name", "typeHrid", "categoryHrid", "filterKey", "rank", "value1", "value2", "capturedAt"],
+      ["id", "captureId", "playerKey", "name", "typeHrid", "categoryHrid", "filterKey", "rank", "value1", "value2", "experienceValue", "noGuildConfirmedAtCapture", "capturedAt"],
       ...(data.leaderboardEntries || []).map((event) => [
         event.id, event.captureId, event.playerKey, event.name, event.typeHrid, event.categoryHrid,
-        event.filterKey, event.rank, event.value1, event.value2, event.capturedAt
+        event.filterKey, event.rank, event.value1, event.value2, event.experienceValue,
+        event.noGuildConfirmedAtCapture, event.capturedAt
       ])
     ];
     return {
@@ -3096,15 +3071,12 @@
     }
     .mwi-git-player:hover { background: rgba(76,201,192,.055); }
     .mwi-git-player[aria-selected="true"] { background: rgba(87,213,202,.10); box-shadow: inset 2px 0 var(--mwi-git-scan); }
-    .mwi-git-player-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--mwi-git-muted); }
-    [data-engagement-state="active"] .mwi-git-player-dot { background: #48d087; box-shadow: 0 0 9px rgba(72,208,135,.45); }
-    [data-engagement-state="signal"] .mwi-git-player-dot { background: #55c7e8; box-shadow: 0 0 8px rgba(85,199,232,.4); }
-    [data-engagement-state="observing"] .mwi-git-player-dot { background: #f3f6fa; box-shadow: 0 0 7px rgba(243,246,250,.28); }
-    [data-engagement-state="no_progress"] .mwi-git-player-dot { background: #ef9a4b; box-shadow: 0 0 8px rgba(239,154,75,.38); }
-    [data-status="has_guild"] .mwi-git-player-dot { background: #ef646f; }
-    [data-status="invited"] .mwi-git-player-dot { background: var(--mwi-git-warning); }
-    [data-status="invite_failed"] .mwi-git-player-dot { background: var(--mwi-git-error); }
-    [data-status="stale"] .mwi-git-player-dot { opacity: .42; }
+    .mwi-git-player-dot { display: none; width: 6px; height: 6px; border-radius: 50%; }
+    [data-engagement-state="online"] .mwi-git-player-dot { display: block; background: #48d087; box-shadow: 0 0 9px rgba(72,208,135,.45); }
+    [data-engagement-state="offline"] .mwi-git-player-dot { display: block; background: #f3f6fa; box-shadow: 0 0 7px rgba(243,246,250,.28); }
+    [data-status="has_guild"] .mwi-git-player-dot { display: block; background: #ef646f; }
+    [data-status="invited"] .mwi-git-player-dot { display: block; background: var(--mwi-git-warning); }
+    [data-status="invite_failed"] .mwi-git-player-dot { display: block; background: var(--mwi-git-error); }
     .mwi-git-player-copy { min-width: 0; }
     .mwi-git-player-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; font-size: 12px; }
     .mwi-git-player-meta { display: block; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--mwi-git-muted); font-size: 10px; }
@@ -3147,14 +3119,9 @@
     }
     .mwi-git-guild-marker[data-state="joined"] { color: #ef646f; }
     .mwi-git-guild-marker[data-state="own_guild"] { color: #aa83f2; }
-    .mwi-git-guild-marker[data-state="active"] { color: #48d087; }
-    .mwi-git-guild-marker[data-state="signal"] { color: #55c7e8; }
-    .mwi-git-guild-marker[data-state="observing"] { color: #f3f6fa; }
-    .mwi-git-guild-marker[data-state="no_progress"] { color: #ef9a4b; }
-    .mwi-git-guild-marker[data-state="stale"] { color: #818b9d; }
+    .mwi-git-guild-marker[data-state="online"] { color: #48d087; }
+    .mwi-git-guild-marker[data-state="offline"] { color: #f3f6fa; }
     .mwi-git-guild-marker[data-state="inviting"] { color: #efbf4d; }
-    .mwi-git-guild-marker[data-state="unchecked"] { color: #818b9d; }
-    .mwi-git-guild-marker[data-state="unchecked"]::after { opacity: .38; }
     .mwi-git-marker-host--leaderboard { white-space: nowrap; }
     .mwi-git-invite-age-cell {
       position: relative !important;
@@ -3623,8 +3590,8 @@
     if (isOwnGuild(player, identity)) return "own_guild";
     if (player?.latestGuild?.state === "joined") return "joined";
     if (player?.latestGuild?.state === "none" && ["pending", "sent"].includes(invite?.outcome)) return "inviting";
-    if (player?.latestGuild?.state === "none") return assessment?.state || "observing";
-    return "unchecked";
+    if (player?.latestGuild?.state === "none" && ["online", "offline"].includes(assessment?.state)) return assessment.state;
+    return "hidden";
   }
 
   function titleFor(player, observation, invite, identity, i18n, assessment) {
@@ -3636,7 +3603,7 @@
         ? i18n.t("hasGuild")
         : state === "inviting"
           ? i18n.t("inviting")
-        : ["active", "signal", "observing", "no_progress", "stale"].includes(state)
+        : ["online", "offline"].includes(state)
           ? `${i18n.t("noGuild")} · ${i18n.engagementState(state)}`
           : i18n.t("notChecked")
     ];
@@ -3699,8 +3666,13 @@
         ? core.engagementAssessment(player, maps.observationLists.get(player.playerKey), maps.leaderboardEntries)
         : null;
       const state = guildMarkerState(player, invite, identity, observation, assessment);
-      const title = titleFor(player, observation, invite, identity, i18n, assessment);
       let marker = cell.querySelector?.('.mwi-git-guild-marker[data-location="leaderboard"]') || null;
+      if (state === "hidden") {
+        marker?.remove();
+        host.classList?.remove("mwi-git-marker-host--leaderboard");
+        return;
+      }
+      const title = titleFor(player, observation, invite, identity, i18n, assessment);
       if (!marker) marker = app.dom.element("span", {
         className: "mwi-git-guild-marker",
         attributes: { role: "img" }
@@ -3822,10 +3794,14 @@
         ? core.engagementAssessment(player, maps.observationLists.get(player.playerKey), maps.leaderboardEntries)
         : null;
       const state = app.leaderboardDecorations.guildMarkerState(player, invite, identity, observation, assessment);
-      const title = app.leaderboardDecorations.titleFor(player, observation, invite, identity, i18n, assessment);
       let marker = Array.from(nameNode.children || []).find(
         (child) => child.classList?.contains("mwi-git-guild-marker") && child.dataset.location === "chat"
       );
+      if (state === "hidden") {
+        marker?.remove();
+        continue;
+      }
+      const title = app.leaderboardDecorations.titleFor(player, observation, invite, identity, i18n, assessment);
       if (!marker) marker = app.dom.element("span", {
         className: "mwi-git-guild-marker mwi-git-guild-marker--chat",
         attributes: { role: "img" }
@@ -4088,7 +4064,7 @@
     for (const player of players) {
       const invite = invites.get(player.playerKey);
       const activityState = core.activityStateForObservation(observations.get(player.playerKey));
-      const status = core.playerStatus(player, invite, Date.now(), app.config.staleProfileMs);
+      const status = core.playerStatus(player, invite);
       const assessment = core.engagementAssessment(
         player,
         data.profileObservations.filter((event) => event.playerKey === player.playerKey),
@@ -4323,7 +4299,7 @@
       activityState.append(dom.element("option", { text: i18n.t(key), attributes: { value } }));
     }
     const engagementState = dom.element("select", { className: "mwi-git-select", attributes: { "aria-label": i18n.t("allEngagementStates") } });
-    for (const [value, key] of [["all", "allEngagementStates"], ["active", "engagementActive"], ["signal", "engagementSignal"], ["observing", "engagementObserving"], ["no_progress", "engagementNoProgress"], ["stale", "engagementStale"]]) {
+    for (const [value, key] of [["all", "allEngagementStates"], ["online", "engagementOnline"], ["offline", "engagementOffline"]]) {
       engagementState.append(dom.element("option", { text: i18n.t(key), attributes: { value } }));
     }
     const category = dom.element("select", { className: "mwi-git-select", attributes: { "aria-label": i18n.t("allCategories") } });
