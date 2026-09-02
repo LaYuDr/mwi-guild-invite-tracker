@@ -2,7 +2,7 @@
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
 // @namespace    https://github.com/layu/mwi-guild-invite-tracker
-// @version      0.5.4
+// @version      0.5.5
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
 // @description:en Passively records leaderboard profile views, guild status, and native guild invite outcomes
 // @match        https://www.milkywayidle.com/*
@@ -21,7 +21,7 @@
 
   app.config = Object.freeze({
     appId: "mwi-guild-invite-tracker",
-    version: "0.5.4",
+    version: "0.5.5",
     schemaVersion: 3,
     databaseName: "mwi-guild-invite-tracker",
     databaseVersion: 2,
@@ -3152,7 +3152,8 @@
     .mwi-git-player:hover { background: rgba(76,201,192,.055); }
     .mwi-git-player[aria-selected="true"] { background: rgba(87,213,202,.10); box-shadow: inset 2px 0 var(--mwi-git-scan); }
     .mwi-git-player-dot { grid-column: 1; display: block; width: 6px; height: 6px; border-radius: 50%; background: #818b9d; }
-    [data-engagement-state="offline"] .mwi-git-player-dot { background: #f3f6fa; box-shadow: 0 0 7px rgba(243,246,250,.28); }
+    [data-status="no_guild"][data-engagement-state="offline"] .mwi-git-player-dot,
+    [data-status="no_guild"][data-engagement-state="insufficient"] .mwi-git-player-dot { background: #ef9a4b; box-shadow: 0 0 8px rgba(239,154,75,.38); }
     [data-engagement-state="online"] .mwi-git-player-dot,
     [data-profile-online="true"] .mwi-git-player-dot { background: #48d087; box-shadow: 0 0 9px rgba(72,208,135,.45); }
     [data-status="has_guild"] .mwi-git-player-dot { background: #ef646f; box-shadow: none; }
@@ -3201,7 +3202,8 @@
     .mwi-git-guild-marker[data-state="joined"] { color: #ef646f; }
     .mwi-git-guild-marker[data-state="own_guild"] { color: #aa83f2; }
     .mwi-git-guild-marker[data-state="online"] { color: #48d087; }
-    .mwi-git-guild-marker[data-state="offline"] { color: #f3f6fa; }
+    .mwi-git-guild-marker[data-state="offline"],
+    .mwi-git-guild-marker[data-state="insufficient"] { color: #ef9a4b; }
     .mwi-git-guild-marker[data-state="inviting"] { color: #efbf4d; }
     .mwi-git-guild-marker[data-state="unknown"] { color: #818b9d; }
     .mwi-git-marker-host--leaderboard { white-space: nowrap; }
@@ -3670,7 +3672,9 @@
     if (player?.latestGuild?.state === "joined") return "joined";
     if (player?.latestGuild?.state === "none" && ["pending", "sent"].includes(invite?.outcome)) return "inviting";
     if (player?.latestGuild?.state === "none" && core.observationIndicatesOnline(observation)) return "online";
-    if (player?.latestGuild?.state === "none" && ["online", "offline"].includes(assessment?.state)) return assessment.state;
+    if (player?.latestGuild?.state === "none" && ["online", "offline", "insufficient"].includes(assessment?.state)) {
+      return assessment.state;
+    }
     return "unknown";
   }
 
@@ -3683,7 +3687,7 @@
         ? i18n.t("hasGuild")
         : state === "inviting"
           ? i18n.t("inviting")
-        : ["online", "offline"].includes(state)
+        : ["online", "offline", "insufficient"].includes(state)
           ? `${i18n.t("noGuild")} · ${i18n.engagementState(state)}`
           : i18n.t("notChecked")
     ];
