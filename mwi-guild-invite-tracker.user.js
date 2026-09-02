@@ -2,7 +2,7 @@
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
 // @namespace    https://github.com/layu/mwi-guild-invite-tracker
-// @version      0.5.5
+// @version      0.5.6
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
 // @description:en Passively records leaderboard profile views, guild status, and native guild invite outcomes
 // @match        https://www.milkywayidle.com/*
@@ -21,7 +21,7 @@
 
   app.config = Object.freeze({
     appId: "mwi-guild-invite-tracker",
-    version: "0.5.5",
+    version: "0.5.6",
     schemaVersion: 3,
     databaseName: "mwi-guild-invite-tracker",
     databaseVersion: 2,
@@ -666,6 +666,7 @@
       indicatorLocations: "指示器显示",
       showOnLeaderboards: "排行榜",
       showInChat: "聊天室",
+      showUnviewedOnly: "仅显示未查看玩家",
       search: "搜索玩家",
       allStatuses: "全部状态",
       allGuildStates: "全部公会状态",
@@ -762,6 +763,7 @@
       title: "Recruitment archive",
       subtitle: "Leaderboard views and guild invitations",
       close: "Close",
+      showUnviewedOnly: "Show unviewed players only",
       search: "Search players",
       allStatuses: "All statuses",
       allGuildStates: "All guild states",
@@ -845,17 +847,53 @@
     }
   };
 
+  const leaderboardCategoryOrder = Object.freeze([
+    "total_level",
+    "milking",
+    "foraging",
+    "woodcutting",
+    "cheesesmithing",
+    "crafting",
+    "tailoring",
+    "cooking",
+    "brewing",
+    "alchemy",
+    "enhancing",
+    "stamina",
+    "intelligence",
+    "attack",
+    "defense",
+    "melee",
+    "ranged",
+    "magic",
+    "task_points",
+    "labyrinth_points",
+    "labyrinth_depth",
+    "collection_points",
+    "bestiary_points",
+    "fame_points",
+    "guild",
+    "guild_buildings",
+    "guild_shrines",
+    "guild_points",
+    "guild_weekly_points",
+    "guild_weekly_trial"
+  ]);
+  const leaderboardCategoryOrderIndex = new Map(
+    leaderboardCategoryOrder.map((category, index) => [category, index])
+  );
+
   const leaderboardCategoryNames = Object.freeze({
     zh: Object.freeze({
       total_level: "总等级",
       milking: "挤奶",
-      foraging: "采集",
+      foraging: "采摘",
       woodcutting: "伐木",
-      cheesesmithing: "奶酪制作",
+      cheesesmithing: "奶酪锻造",
       crafting: "制作",
       tailoring: "缝纫",
       cooking: "烹饪",
-      brewing: "酿造",
+      brewing: "冲泡",
       alchemy: "炼金",
       enhancing: "强化",
       stamina: "耐力",
@@ -865,12 +903,12 @@
       melee: "近战",
       ranged: "远程",
       magic: "魔法",
-      task_points: "任务点数",
-      labyrinth_points: "迷宫点数",
+      task_points: "任务积分",
+      labyrinth_points: "迷宫积分",
       labyrinth_depth: "迷宫深度",
-      collection_points: "收藏点数",
-      bestiary_points: "图鉴点数",
-      fame_points: "声望点数",
+      collection_points: "收藏积分",
+      bestiary_points: "图鉴积分",
+      fame_points: "名望积分",
       guild: "公会等级",
       guild_buildings: "公会建筑",
       guild_shrines: "公会神殿",
@@ -970,6 +1008,14 @@
     return leaderboardCategoryNames[normalizedLanguage(language)][key] || key;
   }
 
+  function sortLeaderboardCategories(values) {
+    return Array.from(values || []).sort((left, right) => {
+      const leftIndex = leaderboardCategoryOrderIndex.get(left) ?? Number.MAX_SAFE_INTEGER;
+      const rightIndex = leaderboardCategoryOrderIndex.get(right) ?? Number.MAX_SAFE_INTEGER;
+      return leftIndex - rightIndex;
+    });
+  }
+
   function mappedName(dictionary, value, language) {
     const key = String(value || "").trim().toLowerCase();
     if (!key) return "";
@@ -990,6 +1036,9 @@
       },
       category(hrid) {
         return categoryName(hrid, language);
+      },
+      sortCategories(values) {
+        return sortLeaderboardCategories(values);
       },
       guildRole(value) {
         return mappedName(guildRoleNames, value, language);
@@ -1037,12 +1086,14 @@
 
   app.localization = Object.freeze({
     messages,
+    leaderboardCategoryOrder,
     leaderboardCategoryNames,
     guildRoleNames,
     leaderboardTypeNames,
     normalizedLanguage,
     detectLanguage,
     categoryName,
+    sortLeaderboardCategories,
     createI18n
   });
 })(globalThis);
@@ -2943,7 +2994,8 @@
     .mwi-git-panel button:focus-visible,
     .mwi-git-panel input:focus-visible,
     .mwi-git-panel select:focus-visible,
-    .mwi-git-guild-marker:focus-visible {
+    .mwi-git-guild-marker:focus-visible,
+    .mwi-git-leaderboard-filter-toggle:focus-visible {
       outline: 2px solid var(--mwi-git-scan);
       outline-offset: 2px;
     }
@@ -3189,7 +3241,7 @@
       background: #101722;
       box-shadow: 0 2px 8px rgba(0,0,0,.42), inset 0 0 0 2px rgba(255,255,255,.06);
       vertical-align: -.16em;
-      cursor: help;
+      cursor: pointer;
       flex: 0 0 auto;
     }
     .mwi-git-guild-marker::after {
@@ -3207,6 +3259,64 @@
     .mwi-git-guild-marker[data-state="inviting"] { color: #efbf4d; }
     .mwi-git-guild-marker[data-state="unknown"] { color: #818b9d; }
     .mwi-git-marker-host--leaderboard { white-space: nowrap; }
+    .mwi-git-leaderboard-filter-host { position: relative !important; }
+    .mwi-git-leaderboard-filter-toggle {
+      z-index: 4;
+      display: inline-flex;
+      box-sizing: border-box;
+      max-width: 210px;
+      min-height: 36px;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 11px;
+      border: 1px solid #686f91;
+      border-radius: 4px;
+      color: #e8e9f0;
+      background: #2d2e49;
+      box-shadow: 0 4px 12px rgba(0,0,0,.28);
+      font: 600 14px/1.25 inherit;
+      text-align: start;
+      cursor: pointer;
+    }
+    .mwi-git-leaderboard-filter-toggle[data-placement="side"] {
+      position: absolute;
+      top: var(--mwi-git-filter-top);
+      inset-inline-end: var(--mwi-git-filter-inline-end);
+    }
+    .mwi-git-leaderboard-filter-toggle[data-placement="top"] {
+      position: relative;
+      align-self: flex-start;
+      margin: 6px 0;
+    }
+    .mwi-git-leaderboard-filter-toggle:hover { background: #383a5a; }
+    .mwi-git-leaderboard-filter-toggle[aria-pressed="true"] {
+      border-color: #7184dc;
+      background: #485dbb;
+    }
+    .mwi-git-leaderboard-filter-track {
+      position: relative;
+      width: 30px;
+      height: 17px;
+      border-radius: 999px;
+      background: #171a29;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.18);
+      flex: 0 0 auto;
+    }
+    .mwi-git-leaderboard-filter-track::after {
+      content: "";
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+      background: #aeb4c7;
+    }
+    .mwi-git-leaderboard-filter-toggle[aria-pressed="true"] .mwi-git-leaderboard-filter-track::after {
+      left: 16px;
+      background: #fff;
+    }
+    .mwi-git-leaderboard-row-filtered { display: none !important; }
     .mwi-git-invite-age-cell {
       position: relative !important;
       padding-inline-end: 4.75em !important;
@@ -3604,6 +3714,10 @@
   const RANK_HEADERS = new Set(["排名", "rank"]);
   const NAME_HEADERS = new Set(["名称", "name"]);
   const CHARACTER_NAME_SELECTOR = '[class*="CharacterName_characterName__"]';
+  const FILTERED_ROW_CLASS = "mwi-git-leaderboard-row-filtered";
+  const FILTER_TOGGLE_CLASS = "mwi-git-leaderboard-filter-toggle";
+  let unviewedOnly = false;
+  const ICON_SIZE_CANDIDATE_SELECTOR = 'img, svg, [aria-hidden="true"]';
 
   function latestByPlayer(events, dateField) {
     const map = new Map();
@@ -3678,6 +3792,16 @@
     return "unknown";
   }
 
+  function isUnviewedMarkerState(state) {
+    return state === "unknown";
+  }
+
+  function applyLeaderboardRowFilter(row, state, enabled = unviewedOnly) {
+    if (!row?.classList) return;
+    if (enabled && !isUnviewedMarkerState(state)) row.classList.add(FILTERED_ROW_CLASS);
+    else row.classList.remove(FILTERED_ROW_CLASS);
+  }
+
   function titleFor(player, observation, invite, identity, i18n, assessment) {
     const state = guildMarkerState(player, invite, identity, observation, assessment);
     const parts = [
@@ -3712,7 +3836,7 @@
   }
 
   function markerSizeForCell(cell) {
-    const candidates = Array.from(cell?.querySelectorAll?.("img, svg, span") || []);
+    const candidates = Array.from(cell?.querySelectorAll?.(ICON_SIZE_CANDIDATE_SELECTOR) || []);
     for (const node of candidates) {
       if (node.classList?.contains("mwi-git-guild-marker")) continue;
       if (typeof node.getBoundingClientRect !== "function") continue;
@@ -3740,7 +3864,7 @@
   }
 
   function updateMarkers(rows, maps, identity, i18n, used) {
-    rows.forEach(({ cell, name }) => {
+    rows.forEach(({ row, cell, name }) => {
       const host = markerHostForCell(cell);
       const normalizedName = core.normalizeName(name);
       const player = maps.byName.get(normalizedName) || null;
@@ -3769,8 +3893,86 @@
       marker.style.setProperty("--mwi-git-marker-size", `${markerSizeForCell(host)}px`);
       host.classList?.add("mwi-git-marker-host--leaderboard");
       if (host.firstChild !== marker) host.prepend(marker);
+      applyLeaderboardRowFilter(row, state);
       used.add(marker);
     });
+  }
+
+  function clearLeaderboardRowFilters() {
+    for (const row of Array.from(root.document.querySelectorAll(`.${FILTERED_ROW_CLASS}`))) {
+      row.classList?.remove(FILTERED_ROW_CLASS);
+    }
+  }
+
+  function applyCurrentLeaderboardRowFilters() {
+    for (const marker of Array.from(root.document.querySelectorAll('.mwi-git-guild-marker[data-location="leaderboard"]'))) {
+      applyLeaderboardRowFilter(marker.closest?.("tr"), marker.dataset.state);
+    }
+  }
+
+  function updateFilterToggle(toggle, i18n) {
+    const label = toggle.querySelector?.(".mwi-git-leaderboard-filter-label");
+    const text = i18n.t("showUnviewedOnly");
+    if (label && label.textContent !== text) label.textContent = text;
+    toggle.setAttribute("aria-pressed", String(unviewedOnly));
+    toggle.title = text;
+  }
+
+  function filterToggle(i18n) {
+    let toggle = root.document.querySelector(`.${FILTER_TOGGLE_CLASS}`);
+    if (!toggle) {
+      const track = app.dom.element("span", {
+        className: "mwi-git-leaderboard-filter-track",
+        attributes: { "aria-hidden": "true" }
+      });
+      const label = app.dom.element("span", { className: "mwi-git-leaderboard-filter-label" });
+      toggle = app.dom.element("button", {
+        className: FILTER_TOGGLE_CLASS,
+        type: "button",
+        attributes: { "aria-pressed": "false" }
+      }, [track, label]);
+      toggle.addEventListener("click", () => {
+        unviewedOnly = !unviewedOnly;
+        updateFilterToggle(toggle, i18n);
+        applyCurrentLeaderboardRowFilters();
+      });
+    }
+    updateFilterToggle(toggle, i18n);
+    return toggle;
+  }
+
+  function mountFilterToggle(table, i18n) {
+    const tableContainer = table?.parentElement;
+    const content = tableContainer?.parentElement;
+    const panel = content?.parentElement;
+    if (!tableContainer || !content || !panel) return null;
+
+    const toggle = filterToggle(i18n);
+    toggle.parentElement?.classList?.remove("mwi-git-leaderboard-filter-host");
+    const panelRect = panel.getBoundingClientRect?.();
+    const tableRect = table.getBoundingClientRect?.();
+    const sideSpace = panelRect && tableRect ? tableRect.left - panelRect.left : 0;
+    if (sideSpace >= 220) {
+      panel.classList?.add("mwi-git-leaderboard-filter-host");
+      toggle.dataset.placement = "side";
+      toggle.style.setProperty("--mwi-git-filter-top", `${Math.max(0, tableRect.top - panelRect.top)}px`);
+      toggle.style.setProperty("--mwi-git-filter-inline-end", `${Math.max(0, panelRect.right - tableRect.left + 12)}px`);
+      if (toggle.parentElement !== panel) panel.append(toggle);
+    } else {
+      toggle.dataset.placement = "top";
+      if (toggle.parentElement !== content || toggle.nextSibling !== tableContainer) {
+        content.insertBefore(toggle, tableContainer);
+      }
+    }
+    return toggle;
+  }
+
+  function removeFilterToggle(reset = false) {
+    const toggle = root.document.querySelector(`.${FILTER_TOGGLE_CLASS}`);
+    toggle?.parentElement?.classList?.remove("mwi-git-leaderboard-filter-host");
+    toggle?.remove();
+    clearLeaderboardRowFilters();
+    if (reset) unviewedOnly = false;
   }
 
   function clearMarkers() {
@@ -3786,14 +3988,20 @@
     removeLegacyRails();
     if (!enabled) {
       clearMarkers();
+      removeFilterToggle(true);
       return;
     }
     const used = new Set();
+    let mountedFilter = false;
     for (const table of Array.from(root.document.querySelectorAll("table"))) {
       if (!isLeaderboardTable(table) || !visibleTable(table)) continue;
+      if (!mountedFilter) {
+        mountedFilter = Boolean(mountFilterToggle(table, i18n));
+      }
       const rows = leaderboardRows(table);
       updateMarkers(rows, maps, identity, i18n, used);
     }
+    if (!mountedFilter) removeFilterToggle();
     for (const marker of Array.from(root.document.querySelectorAll('.mwi-git-guild-marker[data-location="leaderboard"]'))) {
       if (!used.has(marker)) marker.remove();
     }
@@ -3802,6 +4010,7 @@
   function clear() {
     removeLegacyRails();
     clearMarkers();
+    removeFilterToggle(true);
     for (const legacy of Array.from(root.document.querySelectorAll(".mwi-git-status"))) legacy.remove();
   }
 
@@ -3813,6 +4022,8 @@
     leaderboardRows,
     isOwnGuild,
     guildMarkerState,
+    isUnviewedMarkerState,
+    applyLeaderboardRowFilter,
     titleFor,
     markerSizeForCell,
     markerHostForCell,
@@ -4541,10 +4752,13 @@
     }
 
     function renderCategories() {
-      const categories = [...new Set([
+      const recordedCategories = [...new Set([
         ...data.profileObservations.map((event) => event.leaderboard?.categoryHrid),
         ...(data.leaderboardEntries || []).map((event) => event.categoryHrid)
-      ].filter(Boolean))].sort();
+      ].filter(Boolean))];
+      const categories = typeof i18n.sortCategories === "function"
+        ? i18n.sortCategories(recordedCategories)
+        : recordedCategories.sort();
       const previousCategory = settings.category;
       category.replaceChildren(dom.element("option", { text: i18n.t("allCategories"), attributes: { value: "all" } }));
       for (const value of categories) category.append(dom.element("option", { text: i18n.category(value), attributes: { value } }));
