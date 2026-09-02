@@ -2,7 +2,7 @@
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
 // @namespace    https://github.com/layu/mwi-guild-invite-tracker
-// @version      0.5.7
+// @version      0.5.8
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
 // @description:en Passively records leaderboard profile views, guild status, and native guild invite outcomes
 // @match        https://www.milkywayidle.com/*
@@ -21,7 +21,7 @@
 
   app.config = Object.freeze({
     appId: "mwi-guild-invite-tracker",
-    version: "0.5.7",
+    version: "0.5.8",
     schemaVersion: 3,
     databaseName: "mwi-guild-invite-tracker",
     databaseVersion: 2,
@@ -416,6 +416,10 @@
     return [entry?.typeHrid || "", entry?.categoryHrid || "", entry?.filterKey || ""].join("|");
   }
 
+  function isPlayerLeaderboard(value) {
+    return !/(^|[\/_])guild(?:$|[\/_])/i.test(String(value?.typeHrid || ""));
+  }
+
   function leaderboardExperienceValue(entry) {
     if (entry?.noGuildConfirmedAtCapture !== true) return null;
     return nullableNumber(entry.experienceValue);
@@ -642,6 +646,7 @@
     profileEvidenceBetween,
     leaderboardEvidenceBetween,
     leaderboardExperienceValue,
+    isPlayerLeaderboard,
     dataIndex,
     engagementAssessment,
     playerStatus,
@@ -1680,10 +1685,6 @@
         (snapshot.filtersKnown === false || filterKey(request.leaderboard.filters) === filterKey(snapshot.filters));
     }
 
-    function isPlayerLeaderboard(value) {
-      return !/(^|[\/_])guild(?:$|[\/_])/i.test(String(value?.typeHrid || ""));
-    }
-
     function makeLeaderboardRecord(request, snapshot) {
       const captureId = core.uuid(randomUUID);
       const resolvedFilters = snapshot.filtersKnown === false ? request.leaderboard.filters : snapshot.filters;
@@ -1752,22 +1753,23 @@
       }
       if (event.kind === "leaderboard_snapshot") {
         leaderboard = event.leaderboard;
-        const actions = [{ type: "leaderboard", leaderboard }];
+        const actions = [{ type: "leaderboard", leaderboard, pending: false }];
         const request = [...pendingLeaderboards].reverse().find((entry) => matchesLeaderboard(entry, leaderboard));
         if (request) {
           request.resolved = true;
-          if (isPlayerLeaderboard(leaderboard)) actions.push(makeLeaderboardRecord(request, leaderboard));
+          if (core.isPlayerLeaderboard(leaderboard)) actions.push(makeLeaderboardRecord(request, leaderboard));
         }
         return actions;
       }
       if (event.kind === "leaderboard_requested") {
+        const requestedLeaderboard = core.structuredCloneSafe(event.leaderboard);
         pendingLeaderboards.push({
           id: core.uuid(randomUUID),
           requestedAt: event.at,
-          leaderboard: core.structuredCloneSafe(event.leaderboard),
+          leaderboard: requestedLeaderboard,
           resolved: false
         });
-        return [];
+        return [{ type: "leaderboard", leaderboard: requestedLeaderboard, pending: true }];
       }
       if (event.kind === "profile_requested") {
         pendingProfiles.push({
@@ -4005,13 +4007,22 @@
     }
   }
 
-  function decorate(data, i18n, identity, enabled = true) {
+  function shouldDecorateLeaderboard(leaderboard) {
+    return Boolean(leaderboard) && leaderboard.pending !== true && core.isPlayerLeaderboard(leaderboard);
+  }
+
+  function decorate(data, i18n, identity, enabled = true, leaderboard = null) {
     const maps = summaryMaps(data);
     for (const legacy of Array.from(root.document.querySelectorAll(".mwi-git-status"))) legacy.remove();
     removeLegacyRails();
     if (!enabled) {
       clearMarkers();
       removeFilterToggle(true);
+      return;
+    }
+    if (!shouldDecorateLeaderboard(leaderboard)) {
+      clearMarkers();
+      removeFilterToggle();
       return;
     }
     const used = new Set();
@@ -4051,6 +4062,7 @@
     titleFor,
     markerSizeForCell,
     markerHostForCell,
+    shouldDecorateLeaderboard,
     decorate,
     clear
   });
@@ -5038,6 +5050,7 @@
   let panel = null;
   let sidebar = null;
   let currentData = { players: [], profileObservations: [], inviteEvents: [], leaderboardCaptures: [], leaderboardEntries: [] };
+  let currentLeaderboard = null;
   let observer = null;
   let protocolChain = Promise.resolve();
   const queuedActions = [];
@@ -5045,7 +5058,13 @@
   const preferenceStore = app.displayPreferences.createStore(root.localStorage, app.config.settingsKey);
   let displayPreferences = preferenceStore.load();
   const decorationScheduler = app.scheduler.frameScheduler(() => {
-    app.leaderboardDecorations.decorate(currentData, i18n, identity, displayPreferences.leaderboard);
+    app.leaderboardDecorations.decorate(
+      currentData,
+      i18n,
+      identity,
+      displayPreferences.leaderboard,
+      currentLeaderboard
+    );
     app.chatDecorations.decorate(currentData, i18n, identity, displayPreferences.chat);
     app.guildRosterDecorations.decorate(currentData, i18n);
   });
@@ -5103,6 +5122,9 @@
       return;
     }
     if (action.type === "leaderboard") {
+      currentLeaderboard = action.leaderboard
+        ? { ...action.leaderboard, pending: action.pending === true }
+        : null;
       decorationScheduler.request();
       return;
     }
