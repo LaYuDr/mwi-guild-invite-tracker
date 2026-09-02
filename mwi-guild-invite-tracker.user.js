@@ -2,7 +2,7 @@
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
 // @namespace    https://github.com/layu/mwi-guild-invite-tracker
-// @version      0.5.6
+// @version      0.5.7
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
 // @description:en Passively records leaderboard profile views, guild status, and native guild invite outcomes
 // @match        https://www.milkywayidle.com/*
@@ -21,7 +21,7 @@
 
   app.config = Object.freeze({
     appId: "mwi-guild-invite-tracker",
-    version: "0.5.6",
+    version: "0.5.7",
     schemaVersion: 3,
     databaseName: "mwi-guild-invite-tracker",
     databaseVersion: 2,
@@ -3764,11 +3764,35 @@
     for (const body of Array.from(table?.tBodies || [])) {
       for (const row of Array.from(body.rows || [])) {
         if (!row.cells || row.cells.length < 2) continue;
-        const name = normalizedCellText(row.cells[1]).split("\n")[0].trim();
+        const cell = row.cells[1];
+        const host = markerHostForCell(cell);
+        const dataNameNode = host?.matches?.("[data-name]") ? host : host?.querySelector?.("[data-name]");
+        const dataName = String(dataNameNode?.getAttribute?.("data-name") || "").trim();
+        const contentName = String(host?.textContent || cell?.textContent || "").trim();
+        const name = dataName || contentName || normalizedCellText(cell).split("\n")[0].trim();
         if (name) rows.push({ row, cell: row.cells[1], name });
       }
     }
     return rows;
+  }
+
+  function playerForLeaderboardName(name, maps) {
+    const normalizedName = core.normalizeName(name);
+    const exact = maps.byName.get(normalizedName) || null;
+    if (exact || !normalizedName) return exact;
+
+    let bestMatch = null;
+    let bestLength = -1;
+    for (const [candidateName, player] of maps.byName) {
+      if (!candidateName || !normalizedName.endsWith(candidateName)) continue;
+      const decoration = normalizedName.slice(0, -candidateName.length);
+      if (!decoration || /[\p{L}\p{N}_]/u.test(decoration)) continue;
+      if (candidateName.length > bestLength) {
+        bestMatch = player;
+        bestLength = candidateName.length;
+      }
+    }
+    return bestMatch;
   }
 
   function isOwnGuild(player, identity) {
@@ -3866,8 +3890,7 @@
   function updateMarkers(rows, maps, identity, i18n, used) {
     rows.forEach(({ row, cell, name }) => {
       const host = markerHostForCell(cell);
-      const normalizedName = core.normalizeName(name);
-      const player = maps.byName.get(normalizedName) || null;
+      const player = playerForLeaderboardName(name, maps);
       const observation = player ? maps.observations.get(player.playerKey) : null;
       const invite = player ? maps.invites.get(player.playerKey) : null;
       const assessment = player
@@ -4020,6 +4043,7 @@
     normalizedCellText,
     isLeaderboardTable,
     leaderboardRows,
+    playerForLeaderboardName,
     isOwnGuild,
     guildMarkerState,
     isUnviewedMarkerState,
