@@ -2,7 +2,7 @@
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
 // @namespace    https://github.com/layu/mwi-guild-invite-tracker
-// @version      0.5.3
+// @version      0.5.4
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
 // @description:en Passively records leaderboard profile views, guild status, and native guild invite outcomes
 // @match        https://www.milkywayidle.com/*
@@ -21,7 +21,7 @@
 
   app.config = Object.freeze({
     appId: "mwi-guild-invite-tracker",
-    version: "0.5.3",
+    version: "0.5.4",
     schemaVersion: 3,
     databaseName: "mwi-guild-invite-tracker",
     databaseVersion: 2,
@@ -153,6 +153,10 @@
 
   function activityStateForObservation(event) {
     return ACTIVITY_STATES.has(event?.activitySnapshot?.state) ? event.activitySnapshot.state : "unrecorded";
+  }
+
+  function observationIndicatesOnline(event) {
+    return activityStateForObservation(event) === "work" || event?.presenceSnapshot?.state === "online";
   }
 
   function mergeAliases(existing, incoming, currentName) {
@@ -622,6 +626,7 @@
     guildSnapshot,
     activitySnapshot,
     activityStateForObservation,
+    observationIndicatesOnline,
     mergePlayer,
     laterIso,
     playerFromProfile,
@@ -3146,12 +3151,13 @@
     .mwi-git-player-spacer { width: 1px; pointer-events: none; }
     .mwi-git-player:hover { background: rgba(76,201,192,.055); }
     .mwi-git-player[aria-selected="true"] { background: rgba(87,213,202,.10); box-shadow: inset 2px 0 var(--mwi-git-scan); }
-    .mwi-git-player-dot { grid-column: 1; display: block; width: 6px; height: 6px; border-radius: 50%; visibility: hidden; }
-    [data-engagement-state="online"] .mwi-git-player-dot { visibility: visible; background: #48d087; box-shadow: 0 0 9px rgba(72,208,135,.45); }
-    [data-engagement-state="offline"] .mwi-git-player-dot { visibility: visible; background: #f3f6fa; box-shadow: 0 0 7px rgba(243,246,250,.28); }
-    [data-status="has_guild"] .mwi-git-player-dot { visibility: visible; background: #ef646f; }
-    [data-status="invited"] .mwi-git-player-dot { visibility: visible; background: var(--mwi-git-warning); }
-    [data-status="invite_failed"] .mwi-git-player-dot { visibility: visible; background: var(--mwi-git-error); }
+    .mwi-git-player-dot { grid-column: 1; display: block; width: 6px; height: 6px; border-radius: 50%; background: #818b9d; }
+    [data-engagement-state="offline"] .mwi-git-player-dot { background: #f3f6fa; box-shadow: 0 0 7px rgba(243,246,250,.28); }
+    [data-engagement-state="online"] .mwi-git-player-dot,
+    [data-profile-online="true"] .mwi-git-player-dot { background: #48d087; box-shadow: 0 0 9px rgba(72,208,135,.45); }
+    [data-status="has_guild"] .mwi-git-player-dot { background: #ef646f; box-shadow: none; }
+    [data-status="invited"] .mwi-git-player-dot { background: var(--mwi-git-warning); box-shadow: none; }
+    [data-status="invite_failed"] .mwi-git-player-dot { background: var(--mwi-git-error); box-shadow: none; }
     .mwi-git-player-copy { grid-column: 2; min-width: 0; }
     .mwi-git-player-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; font-size: 12px; }
     .mwi-git-player-meta { display: block; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--mwi-git-muted); font-size: 10px; }
@@ -3197,6 +3203,7 @@
     .mwi-git-guild-marker[data-state="online"] { color: #48d087; }
     .mwi-git-guild-marker[data-state="offline"] { color: #f3f6fa; }
     .mwi-git-guild-marker[data-state="inviting"] { color: #efbf4d; }
+    .mwi-git-guild-marker[data-state="unknown"] { color: #818b9d; }
     .mwi-git-marker-host--leaderboard { white-space: nowrap; }
     .mwi-git-invite-age-cell {
       position: relative !important;
@@ -3662,8 +3669,9 @@
     if (isOwnGuild(player, identity)) return "own_guild";
     if (player?.latestGuild?.state === "joined") return "joined";
     if (player?.latestGuild?.state === "none" && ["pending", "sent"].includes(invite?.outcome)) return "inviting";
+    if (player?.latestGuild?.state === "none" && core.observationIndicatesOnline(observation)) return "online";
     if (player?.latestGuild?.state === "none" && ["online", "offline"].includes(assessment?.state)) return assessment.state;
-    return "hidden";
+    return "unknown";
   }
 
   function titleFor(player, observation, invite, identity, i18n, assessment) {
@@ -3745,11 +3753,6 @@
         : null;
       const state = guildMarkerState(player, invite, identity, observation, assessment);
       let marker = cell.querySelector?.('.mwi-git-guild-marker[data-location="leaderboard"]') || null;
-      if (state === "hidden") {
-        marker?.remove();
-        host.classList?.remove("mwi-git-marker-host--leaderboard");
-        return;
-      }
       const title = titleFor(player, observation, invite, identity, i18n, assessment);
       if (!marker) marker = app.dom.element("span", {
         className: "mwi-git-guild-marker",
@@ -3881,10 +3884,6 @@
       let marker = Array.from(nameNode.children || []).find(
         (child) => child.classList?.contains("mwi-git-guild-marker") && child.dataset.location === "chat"
       );
-      if (state === "hidden") {
-        marker?.remove();
-        continue;
-      }
       const title = app.leaderboardDecorations.titleFor(player, observation, invite, identity, i18n, assessment);
       if (!marker) marker = app.dom.element("span", {
         className: "mwi-git-guild-marker mwi-git-guild-marker--chat",
@@ -4192,7 +4191,8 @@
           "aria-selected": String(player.playerKey === selectedKey),
           "data-status": status,
           "data-activity-state": activityState,
-          "data-engagement-state": assessment.state
+          "data-engagement-state": assessment.state,
+          "data-profile-online": String(core.observationIndicatesOnline(observations.get(player.playerKey)))
         }
       });
       const dot = dom.element("span", { className: "mwi-git-player-dot", attributes: { "aria-hidden": "true" } });
