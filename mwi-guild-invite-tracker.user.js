@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
-// @namespace    https://github.com/layu/mwi-guild-invite-tracker
-// @version      0.5.8
+// @namespace    https://github.com/LaYuDr/mwi-guild-invite-tracker
+// @version      0.5.9
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
 // @description:en Passively records leaderboard profile views, guild status, and native guild invite outcomes
 // @match        https://www.milkywayidle.com/*
@@ -21,7 +21,7 @@
 
   app.config = Object.freeze({
     appId: "mwi-guild-invite-tracker",
-    version: "0.5.8",
+    version: "0.5.9",
     schemaVersion: 3,
     databaseName: "mwi-guild-invite-tracker",
     databaseVersion: 2,
@@ -471,6 +471,7 @@
     const categories = new Map();
     const ranks = new Map();
     const categoryRanks = new Map();
+    const totalLevels = new Map();
 
     for (const event of source.inviteEvents || []) {
       const previous = invites.get(event.playerKey);
@@ -500,7 +501,12 @@
     }
     for (const [playerKey, events] of observationLists) {
       events.sort((a, b) => Date.parse(b.viewedAt || 0) - Date.parse(a.viewedAt || 0));
-      observations.set(playerKey, events[0]);
+      const latest = events[0];
+      observations.set(playerKey, latest);
+      const totalLevel = nullableNumber(events.find((event) =>
+        nullableNumber(event.progressSnapshot?.metrics?.totalLevel) !== null
+      )?.progressSnapshot?.metrics?.totalLevel);
+      if (totalLevel !== null) totalLevels.set(playerKey, totalLevel);
     }
     for (const entry of source.leaderboardEntries || []) {
       if (!leaderboardEntryLists.has(entry.playerKey)) leaderboardEntryLists.set(entry.playerKey, []);
@@ -533,6 +539,7 @@
       categories,
       ranks,
       categoryRanks,
+      totalLevels,
       engagementBases
     };
     dataIndexCache.set(source, index);
@@ -609,6 +616,13 @@
             ? index.categoryRanks.get(player.playerKey)?.get(category) ?? Number.POSITIVE_INFINITY
             : index.ranks.get(player.playerKey) ?? Number.POSITIVE_INFINITY;
           return direction * (rankFor(a) - rankFor(b));
+        }
+        if (sort === "totalLevel") {
+          const aLevel = index.totalLevels.get(a.playerKey);
+          const bLevel = index.totalLevels.get(b.playerKey);
+          if (aLevel === undefined) return bLevel === undefined ? 0 : 1;
+          if (bLevel === undefined) return -1;
+          return direction * (aLevel - bLevel);
         }
         const aValue = Date.parse(a[sort] || 0) || 0;
         const bValue = Date.parse(b[sort] || 0) || 0;
@@ -707,6 +721,7 @@
       sortRecentInvite: "最近邀请",
       sortName: "玩家名称",
       sortRank: "最佳排名",
+      sortTotalLevel: "总等级最高",
       exportJson: "导出备份",
       exportCsv: "导出表格",
       importJson: "导入",
@@ -803,6 +818,7 @@
       sortRecentInvite: "Recently invited",
       sortName: "Player name",
       sortRank: "Best rank",
+      sortTotalLevel: "Highest total level",
       exportJson: "Export full backup",
       exportCsv: "Export CSV",
       importJson: "Import backup",
@@ -3226,6 +3242,7 @@
     .mwi-git-event { position: relative; margin: 0; padding: 8px 0 9px; border-bottom: 1px solid rgba(49,66,87,.45); }
     .mwi-git-event::before { content: ""; position: absolute; left: -17px; top: 13px; width: 6px; height: 6px; border: 2px solid var(--mwi-git-space); border-radius: 50%; background: var(--mwi-git-scan); box-shadow: 0 0 0 1px var(--mwi-git-scan); }
     .mwi-git-event--invite::before { background: var(--mwi-git-warning); box-shadow: 0 0 0 1px var(--mwi-git-warning); }
+    .mwi-git-event--invite[data-outcome="already_in_guild"]::before { background: var(--mwi-git-error); box-shadow: 0 0 0 1px var(--mwi-git-error); }
     .mwi-git-event-title { display: flex; justify-content: space-between; gap: 10px; font-size: 11px; font-weight: 700; }
     .mwi-git-event-time { color: var(--mwi-git-muted); font: 10px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
     .mwi-git-event-detail { margin-top: 3px; color: var(--mwi-git-muted); font-size: 10px; line-height: 1.45; }
@@ -3321,16 +3338,18 @@
     .mwi-git-leaderboard-row-filtered { display: none !important; }
     .mwi-git-invite-age-cell {
       position: relative !important;
-      padding-inline-end: 4.75em !important;
+      overflow: visible !important;
     }
     .mwi-git-invite-age {
       position: absolute;
-      inset-inline-end: .75em;
+      inset-inline-end: calc(100% + .75em);
       top: 50%;
+      min-width: 4em;
       transform: translateY(-50%);
       color: var(--mwi-git-warning);
       font: 700 .82em/1 ui-monospace, SFMono-Regular, Menlo, monospace;
       font-variant-numeric: tabular-nums;
+      text-align: end;
       white-space: nowrap;
       cursor: help;
     }
@@ -4535,7 +4554,10 @@
     for (const event of events) {
       const invite = event.timelineType === "invite";
       const leaderboard = event.timelineType === "leaderboard";
-      const item = dom.element("li", { className: `mwi-git-event${invite ? " mwi-git-event--invite" : ""}` });
+      const item = dom.element("li", {
+        className: `mwi-git-event${invite ? " mwi-git-event--invite" : ""}`,
+        attributes: invite ? { "data-outcome": event.outcome } : {}
+      });
       const eventTitle = dom.element("div", { className: "mwi-git-event-title" });
       eventTitle.append(
         dom.element("span", { text: invite ? i18n.t("inviteAttempt") : leaderboard ? i18n.t("leaderboardCaptured") : i18n.t("viewed") }),
@@ -4695,7 +4717,7 @@
       days.append(dom.element("option", { text: i18n.t(key), attributes: { value } }));
     }
     const sort = dom.element("select", { className: "mwi-git-select", attributes: { "aria-label": i18n.t("sortRecentView") } });
-    for (const [value, key] of [["lastViewedAt", "sortRecentView"], ["lastInvitedAt", "sortRecentInvite"], ["rank", "sortRank"], ["name", "sortName"]]) {
+    for (const [value, key] of [["lastViewedAt", "sortRecentView"], ["lastInvitedAt", "sortRecentInvite"], ["rank", "sortRank"], ["totalLevel", "sortTotalLevel"], ["name", "sortName"]]) {
       sort.append(dom.element("option", { text: i18n.t(key), attributes: { value } }));
     }
     search.value = settings.query;
