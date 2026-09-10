@@ -2,7 +2,7 @@
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
 // @namespace    https://github.com/LaYuDr/mwi-guild-invite-tracker
-// @version      0.5.9
+// @version      0.5.10
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
 // @description:en Passively records leaderboard profile views, guild status, and native guild invite outcomes
 // @match        https://www.milkywayidle.com/*
@@ -21,7 +21,7 @@
 
   app.config = Object.freeze({
     appId: "mwi-guild-invite-tracker",
-    version: "0.5.9",
+    version: "0.5.10",
     schemaVersion: 3,
     databaseName: "mwi-guild-invite-tracker",
     databaseVersion: 2,
@@ -3263,6 +3263,33 @@
       cursor: pointer;
       flex: 0 0 auto;
     }
+    .mwi-git-guild-marker::before {
+      content: attr(data-tooltip);
+      position: absolute;
+      left: 50%;
+      bottom: calc(100% + 8px);
+      z-index: 5;
+      display: none;
+      width: max-content;
+      max-width: min(320px, 70vw);
+      box-sizing: border-box;
+      padding: 6px 8px;
+      border: 1px solid rgba(126, 149, 177, .5);
+      border-radius: 5px;
+      color: var(--mwi-git-text);
+      background: #111b2a;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, .45);
+      font: 11px/1.45 ui-sans-serif, system-ui, sans-serif;
+      text-align: left;
+      white-space: pre-line;
+      overflow-wrap: anywhere;
+      transform: translateX(-50%);
+      pointer-events: none;
+    }
+    .mwi-git-guild-marker:hover::before,
+    .mwi-git-guild-marker:focus-visible::before {
+      display: block;
+    }
     .mwi-git-guild-marker::after {
       content: "";
       position: absolute;
@@ -3847,7 +3874,7 @@
     else row.classList.remove(FILTERED_ROW_CLASS);
   }
 
-  function titleFor(player, observation, invite, identity, i18n, assessment) {
+  function titleFor(player, observation, invite, identity, i18n, assessment, totalLevel = null) {
     const state = guildMarkerState(player, invite, identity, observation, assessment);
     const parts = [
       state === "own_guild"
@@ -3860,6 +3887,9 @@
           ? `${i18n.t("noGuild")} · ${i18n.engagementState(state)}`
           : i18n.t("notChecked")
     ];
+    if (totalLevel !== null && totalLevel !== undefined) {
+      parts.push(`${i18n.category("total_level")} ${totalLevel}`);
+    }
     if (state === "joined" && player.latestGuild?.guildName) parts.push(player.latestGuild.guildName);
     if (observation?.leaderboard) {
       parts.push(`${i18n.category(observation.leaderboard.categoryHrid)} · ${i18n.t("rank")} ${observation.leaderboard.rank ?? "—"}`);
@@ -3925,14 +3955,16 @@
         : null;
       const state = guildMarkerState(player, invite, identity, observation, assessment);
       let marker = cell.querySelector?.('.mwi-git-guild-marker[data-location="leaderboard"]') || null;
-      const title = titleFor(player, observation, invite, identity, i18n, assessment);
+      const totalLevel = player ? maps.dataIndex.totalLevels.get(player.playerKey) : null;
+      const title = titleFor(player, observation, invite, identity, i18n, assessment, totalLevel);
       if (!marker) marker = app.dom.element("span", {
         className: "mwi-git-guild-marker",
         attributes: { role: "img" }
       });
       marker.dataset.location = "leaderboard";
       marker.dataset.state = state;
-      marker.title = title;
+      marker.dataset.tooltip = title;
+      marker.removeAttribute("title");
       marker.setAttribute("aria-label", `${name}: ${title.replace(/\n/g, ", ")}`);
       marker.style.setProperty("--mwi-git-marker-size", `${markerSizeForCell(host)}px`);
       host.classList?.add("mwi-git-marker-host--leaderboard");
@@ -4096,19 +4128,20 @@
   const CHAT_NAME_SELECTOR = '[class*="ChatMessage_name__"]';
   const CHARACTER_NAME_SELECTOR = '[class*="CharacterName_characterName__"]';
 
-  function leafTextCandidates(node) {
+  function leafTextCandidates(node, includeNumeric = false) {
     const descendants = Array.from(node?.querySelectorAll?.("*") || []);
     const leaves = descendants.filter((child) =>
       !child.classList?.contains("mwi-git-guild-marker") && !(child.children?.length > 0)
     );
     return [node, ...leaves]
       .map((child) => String(child?.innerText || child?.textContent || "").trim())
-      .filter((text) => text && text.length <= 64 && /[\p{L}\p{N}]/u.test(text) && !/^\d+$/.test(text));
+      .filter((text) => text && text.length <= 64 && /[\p{L}\p{N}]/u.test(text) && (includeNumeric || !/^\d+$/.test(text)));
   }
 
   function chatCharacterName(node, maps) {
     const characterNode = node?.querySelector?.(CHARACTER_NAME_SELECTOR);
-    const candidates = leafTextCandidates(characterNode || node);
+    const allCandidates = leafTextCandidates(characterNode || node, true);
+    const candidates = allCandidates.filter((candidate) => !/^\d+$/.test(candidate));
     for (const candidate of candidates) {
       const exact = maps.byName.get(core.normalizeName(candidate));
       if (exact) return exact.currentName;
@@ -4118,7 +4151,13 @@
         return player.currentName;
       }
     }
-    return candidates.sort((left, right) => right.length - left.length)[0] || "";
+    const numericCandidates = allCandidates.filter((candidate) => /^\d+$/.test(candidate));
+    for (const candidate of numericCandidates) {
+      const exact = maps.byName.get(core.normalizeName(candidate));
+      if (exact) return exact.currentName;
+    }
+    const fallbackCandidates = candidates.length ? candidates : numericCandidates;
+    return fallbackCandidates.sort((left, right) => right.length - left.length)[0] || "";
   }
 
   function clear() {
@@ -4154,14 +4193,16 @@
       let marker = Array.from(nameNode.children || []).find(
         (child) => child.classList?.contains("mwi-git-guild-marker") && child.dataset.location === "chat"
       );
-      const title = app.leaderboardDecorations.titleFor(player, observation, invite, identity, i18n, assessment);
+      const totalLevel = player ? maps.dataIndex.totalLevels.get(player.playerKey) : null;
+      const title = app.leaderboardDecorations.titleFor(player, observation, invite, identity, i18n, assessment, totalLevel);
       if (!marker) marker = app.dom.element("span", {
         className: "mwi-git-guild-marker mwi-git-guild-marker--chat",
         attributes: { role: "img" }
       });
       marker.dataset.location = "chat";
       marker.dataset.state = state;
-      marker.title = title;
+      marker.dataset.tooltip = title;
+      marker.removeAttribute("title");
       marker.setAttribute("aria-label", `${name}: ${title.replace(/\n/g, ", ")}`);
       marker.style.setProperty("--mwi-git-marker-size", `${app.leaderboardDecorations.markerSizeForCell(nameNode)}px`);
       if (nameNode.firstChild !== marker) nameNode.prepend(marker);
