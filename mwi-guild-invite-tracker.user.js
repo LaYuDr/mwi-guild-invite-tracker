@@ -2,7 +2,7 @@
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
 // @namespace    https://github.com/LaYuDr/mwi-guild-invite-tracker
-// @version      0.5.10
+// @version      0.5.11
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
 // @description:en Passively records leaderboard profile views, guild status, and native guild invite outcomes
 // @match        https://www.milkywayidle.com/*
@@ -21,7 +21,7 @@
 
   app.config = Object.freeze({
     appId: "mwi-guild-invite-tracker",
-    version: "0.5.10",
+    version: "0.5.11",
     schemaVersion: 3,
     databaseName: "mwi-guild-invite-tracker",
     databaseVersion: 2,
@@ -3266,7 +3266,7 @@
     .mwi-git-guild-marker::before {
       content: attr(data-tooltip);
       position: absolute;
-      left: 50%;
+      left: 0;
       bottom: calc(100% + 8px);
       z-index: 5;
       display: none;
@@ -3283,8 +3283,12 @@
       text-align: left;
       white-space: pre-line;
       overflow-wrap: anywhere;
-      transform: translateX(-50%);
+      transform: none;
       pointer-events: none;
+    }
+    .mwi-git-guild-marker[data-tooltip-placement="left"]::before {
+      right: 0;
+      left: auto;
     }
     .mwi-git-guild-marker:hover::before,
     .mwi-git-guild-marker:focus-visible::before {
@@ -3931,6 +3935,13 @@
     return cell?.querySelector?.(CHARACTER_NAME_SELECTOR) || cell;
   }
 
+  function tooltipPlacementFor(node) {
+    const rect = node?.getBoundingClientRect?.();
+    const viewportWidth = Number(root.innerWidth) || Number(root.document?.documentElement?.clientWidth) || 0;
+    if (!rect || !viewportWidth) return "right";
+    return rect.left + rect.width / 2 <= viewportWidth / 2 ? "right" : "left";
+  }
+
   function removeLegacyRails() {
     for (const rail of Array.from(root.document.querySelectorAll(".mwi-git-leaderboard-rail"))) {
       rail.parentElement?.classList?.remove("mwi-git-leaderboard-host");
@@ -3969,6 +3980,7 @@
       marker.style.setProperty("--mwi-git-marker-size", `${markerSizeForCell(host)}px`);
       host.classList?.add("mwi-git-marker-host--leaderboard");
       if (host.firstChild !== marker) host.prepend(marker);
+      marker.dataset.tooltipPlacement = tooltipPlacementFor(marker);
       applyLeaderboardRowFilter(row, state);
       used.add(marker);
     });
@@ -4113,6 +4125,7 @@
     titleFor,
     markerSizeForCell,
     markerHostForCell,
+    tooltipPlacementFor,
     shouldDecorateLeaderboard,
     decorate,
     clear
@@ -4206,6 +4219,7 @@
       marker.setAttribute("aria-label", `${name}: ${title.replace(/\n/g, ", ")}`);
       marker.style.setProperty("--mwi-git-marker-size", `${app.leaderboardDecorations.markerSizeForCell(nameNode)}px`);
       if (nameNode.firstChild !== marker) nameNode.prepend(marker);
+      marker.dataset.tooltipPlacement = app.leaderboardDecorations.tooltipPlacementFor(marker);
       used.add(marker);
     }
     for (const marker of Array.from(root.document.querySelectorAll('.mwi-git-guild-marker[data-location="chat"]'))) {
