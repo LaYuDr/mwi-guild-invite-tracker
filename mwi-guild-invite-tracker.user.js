@@ -2,7 +2,7 @@
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
 // @namespace    https://github.com/LaYuDr/mwi-guild-invite-tracker
-// @version      0.5.11
+// @version      0.5.12
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
 // @description:en Passively records leaderboard profile views, guild status, and native guild invite outcomes
 // @match        https://www.milkywayidle.com/*
@@ -21,7 +21,7 @@
 
   app.config = Object.freeze({
     appId: "mwi-guild-invite-tracker",
-    version: "0.5.11",
+    version: "0.5.12",
     schemaVersion: 3,
     databaseName: "mwi-guild-invite-tracker",
     databaseVersion: 2,
@@ -3248,6 +3248,8 @@
     .mwi-git-event-detail { margin-top: 3px; color: var(--mwi-git-muted); font-size: 10px; line-height: 1.45; }
     .mwi-git-guild-marker {
       --mwi-git-marker-size: 1.2em;
+      --mwi-git-tooltip-inline-offset: 0px;
+      --mwi-git-tooltip-max-height: min(240px, calc(100vh - 16px));
       position: relative;
       display: inline-block;
       box-sizing: border-box;
@@ -3266,12 +3268,13 @@
     .mwi-git-guild-marker::before {
       content: attr(data-tooltip);
       position: absolute;
-      left: 0;
+      left: var(--mwi-git-tooltip-inline-offset);
       bottom: calc(100% + 8px);
       z-index: 5;
       display: none;
       width: max-content;
-      max-width: min(320px, 70vw);
+      max-width: min(320px, calc(100vw - 16px));
+      max-height: var(--mwi-git-tooltip-max-height);
       box-sizing: border-box;
       padding: 6px 8px;
       border: 1px solid rgba(126, 149, 177, .5);
@@ -3283,12 +3286,14 @@
       text-align: left;
       white-space: pre-line;
       overflow-wrap: anywhere;
+      overflow-y: auto;
+      overscroll-behavior: contain;
       transform: none;
       pointer-events: none;
     }
-    .mwi-git-guild-marker[data-tooltip-placement="left"]::before {
-      right: 0;
-      left: auto;
+    .mwi-git-guild-marker[data-tooltip-placement="bottom"]::before {
+      top: calc(100% + 8px);
+      bottom: auto;
     }
     .mwi-git-guild-marker:hover::before,
     .mwi-git-guild-marker:focus-visible::before {
@@ -3768,6 +3773,12 @@
   const CHARACTER_NAME_SELECTOR = '[class*="CharacterName_characterName__"]';
   const FILTERED_ROW_CLASS = "mwi-git-leaderboard-row-filtered";
   const FILTER_TOGGLE_CLASS = "mwi-git-leaderboard-filter-toggle";
+  const TOOLTIP_VIEWPORT_GUTTER = 8;
+  const TOOLTIP_GAP = 8;
+  const TOOLTIP_MAX_WIDTH = 320;
+  const TOOLTIP_MAX_HEIGHT = 240;
+  const TOOLTIP_PREFERRED_HEIGHT = 180;
+  const summaryMapsCache = new WeakMap();
   let unviewedOnly = false;
   const ICON_SIZE_CANDIDATE_SELECTOR = 'img, svg, [aria-hidden="true"]';
 
@@ -3783,20 +3794,25 @@
   }
 
   function summaryMaps(data) {
-    const index = core.dataIndex(data);
+    const source = data && typeof data === "object" ? data : {};
+    const cached = summaryMapsCache.get(source);
+    if (cached) return cached;
+    const index = core.dataIndex(source);
     const byName = new Map();
-    for (const player of data.players || []) {
+    for (const player of source.players || []) {
       byName.set(core.normalizeName(player.currentName), player);
       for (const alias of player.nameAliases || []) byName.set(core.normalizeName(alias), player);
     }
-    return {
+    const maps = {
       byName,
       invites: index.invites,
       observations: index.observations,
       observationLists: index.observationLists,
-      leaderboardEntries: data.leaderboardEntries || [],
+      leaderboardEntries: source.leaderboardEntries || [],
       dataIndex: index
     };
+    summaryMapsCache.set(source, maps);
+    return maps;
   }
 
   function normalizedCellText(cell) {
@@ -3938,8 +3954,35 @@
   function tooltipPlacementFor(node) {
     const rect = node?.getBoundingClientRect?.();
     const viewportWidth = Number(root.innerWidth) || Number(root.document?.documentElement?.clientWidth) || 0;
-    if (!rect || !viewportWidth) return "right";
-    return rect.left + rect.width / 2 <= viewportWidth / 2 ? "right" : "left";
+    const viewportHeight = Number(root.innerHeight) || Number(root.document?.documentElement?.clientHeight) || 0;
+    if (!rect || !viewportWidth || !viewportHeight) {
+      return { vertical: "top", inlineOffset: "0px", maxHeight: `${TOOLTIP_MAX_HEIGHT}px` };
+    }
+    const maxWidth = Math.max(0, Math.min(TOOLTIP_MAX_WIDTH, viewportWidth - TOOLTIP_VIEWPORT_GUTTER * 2));
+    const minLeft = TOOLTIP_VIEWPORT_GUTTER;
+    const maxLeft = Math.max(minLeft, viewportWidth - TOOLTIP_VIEWPORT_GUTTER - maxWidth);
+    const tooltipLeft = Math.min(Math.max(rect.left, minLeft), maxLeft);
+    const topSpace = Math.max(0, rect.top - TOOLTIP_GAP - TOOLTIP_VIEWPORT_GUTTER);
+    const bottomSpace = Math.max(0, viewportHeight - rect.bottom - TOOLTIP_GAP - TOOLTIP_VIEWPORT_GUTTER);
+    const vertical = topSpace >= TOOLTIP_PREFERRED_HEIGHT || topSpace >= bottomSpace ? "top" : "bottom";
+    const availableHeight = vertical === "top" ? topSpace : bottomSpace;
+    return {
+      vertical,
+      inlineOffset: `${Math.round(tooltipLeft - rect.left)}px`,
+      maxHeight: `${Math.floor(Math.min(TOOLTIP_MAX_HEIGHT, availableHeight))}px`
+    };
+  }
+
+  function setStyleIfChanged(node, name, value) {
+    if (node.style?.getPropertyValue?.(name) === value) return;
+    node.style?.setProperty?.(name, value);
+  }
+
+  function setTooltipPlacement(marker) {
+    const placement = tooltipPlacementFor(marker);
+    if (marker.dataset.tooltipPlacement !== placement.vertical) marker.dataset.tooltipPlacement = placement.vertical;
+    setStyleIfChanged(marker, "--mwi-git-tooltip-inline-offset", placement.inlineOffset);
+    setStyleIfChanged(marker, "--mwi-git-tooltip-max-height", placement.maxHeight);
   }
 
   function removeLegacyRails() {
@@ -3970,17 +4013,18 @@
       const title = titleFor(player, observation, invite, identity, i18n, assessment, totalLevel);
       if (!marker) marker = app.dom.element("span", {
         className: "mwi-git-guild-marker",
-        attributes: { role: "img" }
+        attributes: { role: "img", tabindex: "0" }
       });
-      marker.dataset.location = "leaderboard";
-      marker.dataset.state = state;
-      marker.dataset.tooltip = title;
-      marker.removeAttribute("title");
-      marker.setAttribute("aria-label", `${name}: ${title.replace(/\n/g, ", ")}`);
-      marker.style.setProperty("--mwi-git-marker-size", `${markerSizeForCell(host)}px`);
+      if (marker.dataset.location !== "leaderboard") marker.dataset.location = "leaderboard";
+      if (marker.dataset.state !== state) marker.dataset.state = state;
+      if (marker.dataset.tooltip !== title) marker.dataset.tooltip = title;
+      if (marker.hasAttribute("title")) marker.removeAttribute("title");
+      const ariaLabel = `${name}: ${title.replace(/\n/g, ", ")}`;
+      if (marker.getAttribute("aria-label") !== ariaLabel) marker.setAttribute("aria-label", ariaLabel);
+      setStyleIfChanged(marker, "--mwi-git-marker-size", `${markerSizeForCell(host)}px`);
       host.classList?.add("mwi-git-marker-host--leaderboard");
       if (host.firstChild !== marker) host.prepend(marker);
-      marker.dataset.tooltipPlacement = tooltipPlacementFor(marker);
+      setTooltipPlacement(marker);
       applyLeaderboardRowFilter(row, state);
       used.add(marker);
     });
@@ -4126,6 +4170,8 @@
     markerSizeForCell,
     markerHostForCell,
     tooltipPlacementFor,
+    setStyleIfChanged,
+    setTooltipPlacement,
     shouldDecorateLeaderboard,
     decorate,
     clear
@@ -4210,16 +4256,21 @@
       const title = app.leaderboardDecorations.titleFor(player, observation, invite, identity, i18n, assessment, totalLevel);
       if (!marker) marker = app.dom.element("span", {
         className: "mwi-git-guild-marker mwi-git-guild-marker--chat",
-        attributes: { role: "img" }
+        attributes: { role: "img", tabindex: "0" }
       });
-      marker.dataset.location = "chat";
-      marker.dataset.state = state;
-      marker.dataset.tooltip = title;
-      marker.removeAttribute("title");
-      marker.setAttribute("aria-label", `${name}: ${title.replace(/\n/g, ", ")}`);
-      marker.style.setProperty("--mwi-git-marker-size", `${app.leaderboardDecorations.markerSizeForCell(nameNode)}px`);
+      if (marker.dataset.location !== "chat") marker.dataset.location = "chat";
+      if (marker.dataset.state !== state) marker.dataset.state = state;
+      if (marker.dataset.tooltip !== title) marker.dataset.tooltip = title;
+      if (marker.hasAttribute("title")) marker.removeAttribute("title");
+      const ariaLabel = `${name}: ${title.replace(/\n/g, ", ")}`;
+      if (marker.getAttribute("aria-label") !== ariaLabel) marker.setAttribute("aria-label", ariaLabel);
+      app.leaderboardDecorations.setStyleIfChanged?.(
+        marker,
+        "--mwi-git-marker-size",
+        `${app.leaderboardDecorations.markerSizeForCell(nameNode)}px`
+      );
       if (nameNode.firstChild !== marker) nameNode.prepend(marker);
-      marker.dataset.tooltipPlacement = app.leaderboardDecorations.tooltipPlacementFor(marker);
+      app.leaderboardDecorations.setTooltipPlacement(marker);
       used.add(marker);
     }
     for (const marker of Array.from(root.document.querySelectorAll('.mwi-git-guild-marker[data-location="chat"]'))) {
@@ -5131,6 +5182,12 @@
   let observer = null;
   let protocolChain = Promise.resolve();
   const queuedActions = [];
+  const DECORATION_RELEVANT_SELECTOR = [
+    "table",
+    '[class*="ChatMessage_name__"]',
+    '[class*="CharacterName_characterName__"]'
+  ].join(",");
+  const OWN_DECORATION_SELECTOR = ".mwi-git-guild-marker, .mwi-git-invite-age, .mwi-git-panel, .mwi-git-leaderboard-filter-toggle";
   const i18n = app.localization.createI18n();
   const preferenceStore = app.displayPreferences.createStore(root.localStorage, app.config.settingsKey);
   let displayPreferences = preferenceStore.load();
@@ -5145,6 +5202,29 @@
     app.chatDecorations.decorate(currentData, i18n, identity, displayPreferences.chat);
     app.guildRosterDecorations.decorate(currentData, i18n);
   });
+
+  function ownDecorationNode(node) {
+    const element = node?.nodeType === 1 ? node : node?.parentElement;
+    return Boolean(element?.closest?.(OWN_DECORATION_SELECTOR));
+  }
+
+  function nodeMayAffectDecorations(node) {
+    const element = node?.nodeType === 1 ? node : node?.parentElement;
+    if (!element || ownDecorationNode(element)) return false;
+    return Boolean(
+      element.matches?.(DECORATION_RELEVANT_SELECTOR) ||
+      element.querySelector?.(DECORATION_RELEVANT_SELECTOR) ||
+      element.closest?.(DECORATION_RELEVANT_SELECTOR)
+    );
+  }
+
+  function mutationsMayAffectDecorations(mutations) {
+    return mutations.some((mutation) => {
+      const changedNodes = [...mutation.addedNodes, ...mutation.removedNodes];
+      if (changedNodes.length && changedNodes.every(ownDecorationNode)) return false;
+      return nodeMayAffectDecorations(mutation.target) || changedNodes.some(nodeMayAffectDecorations);
+    });
+  }
 
   async function refresh() {
     if (!namespace) {
@@ -5348,9 +5428,8 @@
     panel.setData(currentData);
     sidebar = app.sidebarIntegration.createController({ panel, i18n });
     sidebar.start();
-    observer = new MutationObserver(() => {
-      decorationScheduler.request();
-      syncGameLanguage();
+    observer = new MutationObserver((mutations) => {
+      if (mutationsMayAffectDecorations(mutations)) decorationScheduler.request();
     });
     observer.observe(root.document.body, { childList: true, subtree: true });
     decorationScheduler.request();
@@ -5369,6 +5448,9 @@
   }, 1000);
   const languageTimer = root.setInterval(syncGameLanguage, 1000);
   const relativeTimeTimer = root.setInterval(() => decorationScheduler.request(), 60_000);
+  const resizeHandler = () => decorationScheduler.request();
+  root.addEventListener("resize", resizeHandler, { passive: true });
+  root.visualViewport?.addEventListener?.("resize", resizeHandler, { passive: true });
 
   app.runtime = Object.freeze({
     controller,
@@ -5381,6 +5463,8 @@
       root.clearInterval(languageTimer);
       root.clearInterval(relativeTimeTimer);
       root.removeEventListener(app.config.bridgeEvent, handleBridge);
+      root.removeEventListener("resize", resizeHandler);
+      root.visualViewport?.removeEventListener?.("resize", resizeHandler);
       observer?.disconnect();
       decorationScheduler.destroy();
       app.leaderboardDecorations.clear();
