@@ -2,7 +2,7 @@
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
 // @namespace    https://github.com/LaYuDr/mwi-guild-invite-tracker
-// @version      0.5.12
+// @version      0.5.13
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
 // @description:en Passively records leaderboard profile views, guild status, and native guild invite outcomes
 // @match        https://www.milkywayidle.com/*
@@ -21,7 +21,7 @@
 
   app.config = Object.freeze({
     appId: "mwi-guild-invite-tracker",
-    version: "0.5.12",
+    version: "0.5.13",
     schemaVersion: 3,
     databaseName: "mwi-guild-invite-tracker",
     databaseVersion: 2,
@@ -705,11 +705,12 @@
       activityOffline: "离线",
       activityNone: "无",
       activityUnrecorded: "无记录",
-      engagementOnline: "在线（仍在游玩）",
+      playingNow: "在游玩",
+      engagementOnline: "推测出在游玩",
       engagementOffline: "离线（未检测到仍在游玩）",
       engagementInsufficient: "尚无排行榜经验快照",
       engagementNotApplicable: "已有公会 · 不判断",
-      engagementEvidenceLeaderboard: "7 天内排行榜经验增加",
+      engagementEvidenceLeaderboard: "推测出在游玩",
       leaderboardCaptured: "记录排行榜",
       noGuildActivityUnrecorded: "无公会 · 在线数据无记录",
       guildStatus: "公会状态",
@@ -803,11 +804,12 @@
       activityOffline: "Offline",
       activityNone: "None",
       activityUnrecorded: "Not recorded",
-      engagementOnline: "Online (still playing)",
+      playingNow: "Playing now",
+      engagementOnline: "Inferred to be playing",
       engagementOffline: "Offline (no evidence of continued play)",
       engagementInsufficient: "No leaderboard experience snapshot yet",
       engagementNotApplicable: "In a guild · not assessed",
-      engagementEvidenceLeaderboard: "Leaderboard experience increased within 7 days",
+      engagementEvidenceLeaderboard: "Inferred to be playing",
       leaderboardCaptured: "Leaderboard captured",
       guildStatus: "Guild status",
       inviting: "Invitation pending",
@@ -3248,8 +3250,6 @@
     .mwi-git-event-detail { margin-top: 3px; color: var(--mwi-git-muted); font-size: 10px; line-height: 1.45; }
     .mwi-git-guild-marker {
       --mwi-git-marker-size: 1.2em;
-      --mwi-git-tooltip-inline-offset: 0px;
-      --mwi-git-tooltip-max-height: min(240px, calc(100vh - 16px));
       position: relative;
       display: inline-block;
       box-sizing: border-box;
@@ -3265,16 +3265,12 @@
       cursor: pointer;
       flex: 0 0 auto;
     }
-    .mwi-git-guild-marker::before {
-      content: attr(data-tooltip);
-      position: absolute;
-      left: var(--mwi-git-tooltip-inline-offset);
-      bottom: calc(100% + 8px);
-      z-index: 5;
-      display: none;
+    .mwi-git-tooltip {
+      position: fixed;
+      z-index: 2147483647;
       width: max-content;
       max-width: min(320px, calc(100vw - 16px));
-      max-height: var(--mwi-git-tooltip-max-height);
+      max-height: min(240px, calc(100vh - 16px));
       box-sizing: border-box;
       padding: 6px 8px;
       border: 1px solid rgba(126, 149, 177, .5);
@@ -3291,14 +3287,7 @@
       transform: none;
       pointer-events: none;
     }
-    .mwi-git-guild-marker[data-tooltip-placement="bottom"]::before {
-      top: calc(100% + 8px);
-      bottom: auto;
-    }
-    .mwi-git-guild-marker:hover::before,
-    .mwi-git-guild-marker:focus-visible::before {
-      display: block;
-    }
+    .mwi-git-tooltip[hidden] { display: none; }
     .mwi-git-guild-marker::after {
       content: "";
       position: absolute;
@@ -3469,6 +3458,108 @@
   }
 
   app.styles = Object.freeze({ css, installStyles });
+})(globalThis);
+
+// ---- src/ui/tooltip.js ----
+(function initTooltip(root) {
+  "use strict";
+
+  const app = (root.MWIGuildInviteTracker = root.MWIGuildInviteTracker || {});
+  const VIEWPORT_GUTTER = 8;
+  const GAP = 8;
+  let tooltip = null;
+  let activeMarker = null;
+
+  function tooltipPositionFor(anchorRect, tooltipRect, viewport) {
+    const width = Number(viewport?.width) || 0;
+    const height = Number(viewport?.height) || 0;
+    const tooltipWidth = Number(tooltipRect?.width) || 0;
+    const tooltipHeight = Number(tooltipRect?.height) || 0;
+    if (!anchorRect || !width || !height) return { left: 0, top: 0, placement: "bottom" };
+
+    const topSpace = Math.max(0, anchorRect.top - GAP - VIEWPORT_GUTTER);
+    const bottomSpace = Math.max(0, height - anchorRect.bottom - GAP - VIEWPORT_GUTTER);
+    const placement = topSpace >= tooltipHeight || topSpace >= bottomSpace ? "top" : "bottom";
+    const left = Math.max(
+      VIEWPORT_GUTTER,
+      Math.min(anchorRect.left, width - tooltipWidth - VIEWPORT_GUTTER)
+    );
+    const top = placement === "top"
+      ? Math.max(VIEWPORT_GUTTER, anchorRect.top - GAP - tooltipHeight)
+      : Math.min(height - tooltipHeight - VIEWPORT_GUTTER, anchorRect.bottom + GAP);
+    return { left: Math.round(left), top: Math.round(top), placement };
+  }
+
+  function ensure() {
+    if (tooltip?.isConnected) return tooltip;
+    if (!root.document.body) return null;
+    tooltip = root.document.createElement("div");
+    tooltip.id = "mwi-git-tooltip";
+    tooltip.className = "mwi-git-tooltip";
+    tooltip.setAttribute("role", "tooltip");
+    tooltip.hidden = true;
+    root.document.body.append(tooltip);
+    return tooltip;
+  }
+
+  function position() {
+    if (!activeMarker?.isConnected || !tooltip || tooltip.hidden) return;
+    const placement = tooltipPositionFor(
+      activeMarker.getBoundingClientRect(),
+      tooltip.getBoundingClientRect(),
+      { width: root.innerWidth, height: root.innerHeight }
+    );
+    tooltip.style.left = `${placement.left}px`;
+    tooltip.style.top = `${placement.top}px`;
+  }
+
+  function show(marker) {
+    const content = String(marker?.dataset?.tooltip || "").trim();
+    const node = ensure();
+    if (!node || !content) return;
+    activeMarker = marker;
+    node.textContent = content;
+    node.hidden = false;
+    node.style.visibility = "hidden";
+    position();
+    node.style.visibility = "";
+    marker.setAttribute("aria-describedby", node.id);
+  }
+
+  function hide(marker = activeMarker) {
+    if (!activeMarker || (marker && marker !== activeMarker)) return;
+    activeMarker.removeAttribute("aria-describedby");
+    activeMarker = null;
+    if (tooltip) tooltip.hidden = true;
+  }
+
+  function markerFor(node) {
+    return node?.closest?.(".mwi-git-guild-marker") || null;
+  }
+
+  root.document.addEventListener("mouseover", (event) => {
+    const marker = markerFor(event.target);
+    if (!marker || marker.contains(event.relatedTarget)) return;
+    show(marker);
+  }, true);
+  root.document.addEventListener("mouseout", (event) => {
+    const marker = markerFor(event.target);
+    if (!marker || marker.contains(event.relatedTarget)) return;
+    hide(marker);
+  }, true);
+  root.document.addEventListener("focusin", (event) => {
+    const marker = markerFor(event.target);
+    if (marker) show(marker);
+  }, true);
+  root.document.addEventListener("focusout", (event) => {
+    const marker = markerFor(event.target);
+    if (!marker || marker.contains(event.relatedTarget)) return;
+    hide(marker);
+  }, true);
+  root.addEventListener("resize", position, { passive: true });
+  root.addEventListener("scroll", position, { capture: true, passive: true });
+
+  app.tooltip = Object.freeze({ tooltipPositionFor, position, hide });
 })(globalThis);
 
 // ---- src/ui/sidebar-integration.js ----
@@ -3773,11 +3864,6 @@
   const CHARACTER_NAME_SELECTOR = '[class*="CharacterName_characterName__"]';
   const FILTERED_ROW_CLASS = "mwi-git-leaderboard-row-filtered";
   const FILTER_TOGGLE_CLASS = "mwi-git-leaderboard-filter-toggle";
-  const TOOLTIP_VIEWPORT_GUTTER = 8;
-  const TOOLTIP_GAP = 8;
-  const TOOLTIP_MAX_WIDTH = 320;
-  const TOOLTIP_MAX_HEIGHT = 240;
-  const TOOLTIP_PREFERRED_HEIGHT = 180;
   const summaryMapsCache = new WeakMap();
   let unviewedOnly = false;
   const ICON_SIZE_CANDIDATE_SELECTOR = 'img, svg, [aria-hidden="true"]';
@@ -3884,20 +3970,23 @@
     return "unknown";
   }
 
-  function isUnviewedMarkerState(state) {
-    return state === "unknown";
+  function isUnviewedPlayer(player) {
+    return !player?.lastViewedAt;
   }
 
-  function applyLeaderboardRowFilter(row, state, enabled = unviewedOnly) {
+  function applyLeaderboardRowFilter(row, unviewed, enabled = unviewedOnly) {
     if (!row?.classList) return;
-    if (enabled && !isUnviewedMarkerState(state)) row.classList.add(FILTERED_ROW_CLASS);
+    if (enabled && !unviewed) row.classList.add(FILTERED_ROW_CLASS);
     else row.classList.remove(FILTERED_ROW_CLASS);
   }
 
   function titleFor(player, observation, invite, identity, i18n, assessment, totalLevel = null) {
     const state = guildMarkerState(player, invite, identity, observation, assessment);
+    const directPlaying = player?.latestGuild?.state === "none" && core.observationIndicatesOnline(observation);
     const parts = [
-      state === "own_guild"
+      directPlaying
+        ? `${i18n.t("noGuild")} · ${i18n.t("playingNow")}`
+        : state === "own_guild"
         ? i18n.t("ownGuild")
         : state === "joined"
         ? i18n.t("hasGuild")
@@ -3920,7 +4009,7 @@
     if (state === "inviting" && invite?.attemptedAt) {
       parts.push(`${i18n.t("inviteAttempt")} ${app.dom.formatDate(invite.attemptedAt, i18n.language)}`);
     }
-    if (assessment?.latestEvidence) parts.push(i18n.evidence(assessment.latestEvidence));
+    if (!directPlaying && state !== "online" && assessment?.latestEvidence) parts.push(i18n.evidence(assessment.latestEvidence));
     return parts.join("\n");
   }
 
@@ -3951,38 +4040,9 @@
     return cell?.querySelector?.(CHARACTER_NAME_SELECTOR) || cell;
   }
 
-  function tooltipPlacementFor(node) {
-    const rect = node?.getBoundingClientRect?.();
-    const viewportWidth = Number(root.innerWidth) || Number(root.document?.documentElement?.clientWidth) || 0;
-    const viewportHeight = Number(root.innerHeight) || Number(root.document?.documentElement?.clientHeight) || 0;
-    if (!rect || !viewportWidth || !viewportHeight) {
-      return { vertical: "top", inlineOffset: "0px", maxHeight: `${TOOLTIP_MAX_HEIGHT}px` };
-    }
-    const maxWidth = Math.max(0, Math.min(TOOLTIP_MAX_WIDTH, viewportWidth - TOOLTIP_VIEWPORT_GUTTER * 2));
-    const minLeft = TOOLTIP_VIEWPORT_GUTTER;
-    const maxLeft = Math.max(minLeft, viewportWidth - TOOLTIP_VIEWPORT_GUTTER - maxWidth);
-    const tooltipLeft = Math.min(Math.max(rect.left, minLeft), maxLeft);
-    const topSpace = Math.max(0, rect.top - TOOLTIP_GAP - TOOLTIP_VIEWPORT_GUTTER);
-    const bottomSpace = Math.max(0, viewportHeight - rect.bottom - TOOLTIP_GAP - TOOLTIP_VIEWPORT_GUTTER);
-    const vertical = topSpace >= TOOLTIP_PREFERRED_HEIGHT || topSpace >= bottomSpace ? "top" : "bottom";
-    const availableHeight = vertical === "top" ? topSpace : bottomSpace;
-    return {
-      vertical,
-      inlineOffset: `${Math.round(tooltipLeft - rect.left)}px`,
-      maxHeight: `${Math.floor(Math.min(TOOLTIP_MAX_HEIGHT, availableHeight))}px`
-    };
-  }
-
   function setStyleIfChanged(node, name, value) {
     if (node.style?.getPropertyValue?.(name) === value) return;
     node.style?.setProperty?.(name, value);
-  }
-
-  function setTooltipPlacement(marker) {
-    const placement = tooltipPlacementFor(marker);
-    if (marker.dataset.tooltipPlacement !== placement.vertical) marker.dataset.tooltipPlacement = placement.vertical;
-    setStyleIfChanged(marker, "--mwi-git-tooltip-inline-offset", placement.inlineOffset);
-    setStyleIfChanged(marker, "--mwi-git-tooltip-max-height", placement.maxHeight);
   }
 
   function removeLegacyRails() {
@@ -4017,6 +4077,8 @@
       });
       if (marker.dataset.location !== "leaderboard") marker.dataset.location = "leaderboard";
       if (marker.dataset.state !== state) marker.dataset.state = state;
+      const unviewed = isUnviewedPlayer(player);
+      if (marker.dataset.unviewed !== String(unviewed)) marker.dataset.unviewed = String(unviewed);
       if (marker.dataset.tooltip !== title) marker.dataset.tooltip = title;
       if (marker.hasAttribute("title")) marker.removeAttribute("title");
       const ariaLabel = `${name}: ${title.replace(/\n/g, ", ")}`;
@@ -4024,8 +4086,7 @@
       setStyleIfChanged(marker, "--mwi-git-marker-size", `${markerSizeForCell(host)}px`);
       host.classList?.add("mwi-git-marker-host--leaderboard");
       if (host.firstChild !== marker) host.prepend(marker);
-      setTooltipPlacement(marker);
-      applyLeaderboardRowFilter(row, state);
+      applyLeaderboardRowFilter(row, unviewed);
       used.add(marker);
     });
   }
@@ -4038,7 +4099,7 @@
 
   function applyCurrentLeaderboardRowFilters() {
     for (const marker of Array.from(root.document.querySelectorAll('.mwi-git-guild-marker[data-location="leaderboard"]'))) {
-      applyLeaderboardRowFilter(marker.closest?.("tr"), marker.dataset.state);
+      applyLeaderboardRowFilter(marker.closest?.("tr"), marker.dataset.unviewed === "true");
     }
   }
 
@@ -4063,7 +4124,9 @@
         type: "button",
         attributes: { "aria-pressed": "false" }
       }, [track, label]);
-      toggle.addEventListener("click", () => {
+      toggle.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
         unviewedOnly = !unviewedOnly;
         updateFilterToggle(toggle, i18n);
         applyCurrentLeaderboardRowFilters();
@@ -4164,14 +4227,12 @@
     playerForLeaderboardName,
     isOwnGuild,
     guildMarkerState,
-    isUnviewedMarkerState,
+    isUnviewedPlayer,
     applyLeaderboardRowFilter,
     titleFor,
     markerSizeForCell,
     markerHostForCell,
-    tooltipPlacementFor,
     setStyleIfChanged,
-    setTooltipPlacement,
     shouldDecorateLeaderboard,
     decorate,
     clear
@@ -4270,7 +4331,6 @@
         `${app.leaderboardDecorations.markerSizeForCell(nameNode)}px`
       );
       if (nameNode.firstChild !== marker) nameNode.prepend(marker);
-      app.leaderboardDecorations.setTooltipPlacement(marker);
       used.add(marker);
     }
     for (const marker of Array.from(root.document.querySelectorAll('.mwi-git-guild-marker[data-location="chat"]'))) {
@@ -4528,6 +4588,13 @@
     return node;
   }
 
+  function playStatusLabel(player, observation, assessment, i18n) {
+    if (player?.latestGuild?.state === "none" && core.observationIndicatesOnline(observation)) {
+      return i18n.t("playingNow");
+    }
+    return i18n.engagementState(assessment.state);
+  }
+
   function renderPlayerList(container, data, options, selectedKey, i18n, onSelect, view = {}) {
     dom.clear(container);
     const index = view.dataIndex || core.dataIndex(data);
@@ -4551,7 +4618,8 @@
     if (start > 0) container.append(spacer(start * rowHeight));
     for (const player of players.slice(start, end)) {
       const invite = invites.get(player.playerKey);
-      const activityState = core.activityStateForObservation(observations.get(player.playerKey));
+      const observation = observations.get(player.playerKey);
+      const activityState = core.activityStateForObservation(observation);
       const status = core.playerStatus(player, invite);
       const assessment = core.engagementAssessment(
         player,
@@ -4568,7 +4636,7 @@
           "data-status": status,
           "data-activity-state": activityState,
           "data-engagement-state": assessment.state,
-          "data-profile-online": String(core.observationIndicatesOnline(observations.get(player.playerKey)))
+          "data-profile-online": String(core.observationIndicatesOnline(observation))
         }
       });
       const dot = dom.element("span", { className: "mwi-git-player-dot", attributes: { "aria-hidden": "true" } });
@@ -4578,7 +4646,7 @@
         dom.element("span", {
           className: "mwi-git-player-meta",
           text: player.latestGuild?.state === "none"
-            ? `${guildLabel(player, i18n)} · ${i18n.engagementState(assessment.state)}`
+            ? `${guildLabel(player, i18n)} · ${playStatusLabel(player, observation, assessment, i18n)}`
             : guildLabel(player, i18n)
         })
       );
@@ -4627,7 +4695,7 @@
       dom.element("div", {
         className: "mwi-git-detail-guild",
         text: player.latestGuild?.state === "none"
-          ? `${guildLabel(player, i18n)} · ${i18n.engagementState(assessment.state)}`
+          ? `${guildLabel(player, i18n)} · ${playStatusLabel(player, index.observations.get(player.playerKey), assessment, i18n)}`
           : guildLabel(player, i18n)
       })
     );
@@ -4681,7 +4749,7 @@
     container.append(head, list);
   }
 
-  app.historyView = Object.freeze({ latestInviteMap, latestObservationMap, guildLabel, virtualWindow, renderPlayerList, renderTimeline });
+  app.historyView = Object.freeze({ latestInviteMap, latestObservationMap, guildLabel, playStatusLabel, virtualWindow, renderPlayerList, renderTimeline });
 })(globalThis);
 
 // ---- src/ui/panel-shell.js ----
@@ -5467,6 +5535,7 @@
       root.visualViewport?.removeEventListener?.("resize", resizeHandler);
       observer?.disconnect();
       decorationScheduler.destroy();
+      app.tooltip.hide();
       app.leaderboardDecorations.clear();
       app.chatDecorations.clear();
       app.guildRosterDecorations.clear();
