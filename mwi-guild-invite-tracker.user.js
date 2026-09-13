@@ -2,7 +2,7 @@
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
 // @namespace    https://github.com/LaYuDr/mwi-guild-invite-tracker
-// @version      0.5.13
+// @version      0.5.14
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
 // @description:en Passively records leaderboard profile views, guild status, and native guild invite outcomes
 // @match        https://www.milkywayidle.com/*
@@ -21,7 +21,7 @@
 
   app.config = Object.freeze({
     appId: "mwi-guild-invite-tracker",
-    version: "0.5.13",
+    version: "0.5.14",
     schemaVersion: 3,
     databaseName: "mwi-guild-invite-tracker",
     databaseVersion: 2,
@@ -685,6 +685,9 @@
       indicatorLocations: "指示器显示",
       showOnLeaderboards: "排行榜",
       showInChat: "聊天室",
+      showInSocial: "社交列表",
+      openProfile: "打开个人主页",
+      profileUnavailable: "当前页面找不到该玩家的原生名字。",
       showUnviewedOnly: "仅显示未查看玩家",
       search: "搜索玩家",
       allStatuses: "全部状态",
@@ -784,6 +787,13 @@
       title: "Recruitment archive",
       subtitle: "Leaderboard views and guild invitations",
       close: "Close",
+      settings: "Display settings",
+      indicatorLocations: "Indicator locations",
+      showOnLeaderboards: "Leaderboards",
+      showInChat: "Chat",
+      showInSocial: "Social lists",
+      openProfile: "Open player profile",
+      profileUnavailable: "The player's native name is not available on the current page.",
       showUnviewedOnly: "Show unviewed players only",
       search: "Search players",
       allStatuses: "All statuses",
@@ -2882,12 +2892,13 @@
   "use strict";
 
   const app = (root.MWIGuildInviteTracker = root.MWIGuildInviteTracker || {});
-  const defaults = Object.freeze({ leaderboard: true, chat: true });
+  const defaults = Object.freeze({ leaderboard: true, chat: true, social: true });
 
   function normalize(value) {
     return {
       leaderboard: value?.leaderboard !== false,
-      chat: value?.chat !== false
+      chat: value?.chat !== false,
+      social: value?.social !== false
     };
   }
 
@@ -3227,7 +3238,7 @@
     [data-status="no_guild"][data-engagement-state="offline"] .mwi-git-player-dot,
     [data-status="no_guild"][data-engagement-state="insufficient"] .mwi-git-player-dot { background: #ef9a4b; box-shadow: 0 0 8px rgba(239,154,75,.38); }
     [data-engagement-state="online"] .mwi-git-player-dot,
-    [data-profile-online="true"] .mwi-git-player-dot { background: #48d087; box-shadow: 0 0 9px rgba(72,208,135,.45); }
+    [data-status="no_guild"][data-profile-online="true"] .mwi-git-player-dot { background: #48d087; box-shadow: 0 0 9px rgba(72,208,135,.45); }
     [data-status="has_guild"] .mwi-git-player-dot { background: #ef646f; box-shadow: none; }
     [data-status="invited"] .mwi-git-player-dot { background: var(--mwi-git-warning); box-shadow: none; }
     [data-status="invite_failed"] .mwi-git-player-dot { background: var(--mwi-git-error); box-shadow: none; }
@@ -3238,6 +3249,20 @@
     .mwi-git-empty { padding: 24px 18px; color: var(--mwi-git-muted); font-size: 12px; line-height: 1.6; text-align: center; }
     .mwi-git-detail-head { display: flex; gap: 10px; align-items: center; padding: 10px 14px; border-bottom: 1px solid rgba(49,66,87,.7); }
     .mwi-git-detail-head h3 { min-width: 0; flex: 1; margin: 0; overflow: hidden; text-overflow: ellipsis; font-size: 15px; }
+    .mwi-git-profile-link {
+      max-width: 100%;
+      padding: 0;
+      border: 0;
+      color: inherit;
+      background: transparent;
+      font: inherit;
+      font-weight: inherit;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+    .mwi-git-profile-link:hover { color: var(--mwi-git-scan); text-decoration: underline; text-underline-offset: 2px; }
     .mwi-git-detail-guild { margin-top: 2px; color: var(--mwi-git-muted); font-size: 10px; }
     .mwi-git-timeline { position: relative; margin: 0; padding: 8px 14px 20px 33px; list-style: none; }
     .mwi-git-timeline::before { content: ""; position: absolute; top: 11px; bottom: 15px; left: 19px; width: 1px; background: linear-gradient(var(--mwi-git-scan), rgba(87,213,202,.10)); }
@@ -3302,7 +3327,8 @@
     .mwi-git-guild-marker[data-state="insufficient"] { color: #ef9a4b; }
     .mwi-git-guild-marker[data-state="inviting"] { color: #efbf4d; }
     .mwi-git-guild-marker[data-state="unknown"] { color: #818b9d; }
-    .mwi-git-marker-host--leaderboard { white-space: nowrap; }
+    .mwi-git-marker-host--leaderboard,
+    .mwi-git-marker-host--social { white-space: nowrap; }
     .mwi-git-leaderboard-filter-host { position: relative !important; }
     .mwi-git-leaderboard-filter-toggle {
       z-index: 4;
@@ -4348,6 +4374,159 @@
   });
 })(globalThis);
 
+// ---- src/ui/social-decorations.js ----
+(function initSocialDecorations(root) {
+  "use strict";
+
+  const app = (root.MWIGuildInviteTracker = root.MWIGuildInviteTracker || {});
+  const core = app.core;
+  const CHARACTER_NAME_SELECTOR = '[class*="CharacterName_characterName__"]';
+  const SOCIAL_HEADER = /^(?:朋友|friends?|已屏蔽玩家|blocked players?)\s*(?:\(\s*\d+\s*\/\s*\d+\s*\))?$/i;
+
+  function normalizedText(node) {
+    return String(node?.innerText || node?.textContent || "").trim();
+  }
+
+  function isSocialTable(table) {
+    const firstHeader = table?.tHead?.rows?.[0]?.cells?.[0];
+    return SOCIAL_HEADER.test(normalizedText(firstHeader));
+  }
+
+  function socialRows(table, maps) {
+    const rows = [];
+    for (const body of Array.from(table?.tBodies || [])) {
+      for (const row of Array.from(body.rows || [])) {
+        const cell = row.cells?.[0];
+        if (!cell) continue;
+        const host = cell.querySelector?.(CHARACTER_NAME_SELECTOR) || cell;
+        const name = app.chatDecorations.chatCharacterName(host, maps);
+        if (name) rows.push({ row, cell, host, name });
+      }
+    }
+    return rows;
+  }
+
+  function clear() {
+    for (const marker of Array.from(root.document.querySelectorAll('.mwi-git-guild-marker[data-location="social"]'))) {
+      marker.parentElement?.classList?.remove("mwi-git-marker-host--social");
+      marker.remove();
+    }
+  }
+
+  function decorate(data, i18n, identity, enabled = true) {
+    if (!enabled) {
+      clear();
+      return;
+    }
+    const maps = app.leaderboardDecorations.summaryMaps(data);
+    const used = new Set();
+    for (const table of Array.from(root.document.querySelectorAll("table"))) {
+      if (!isSocialTable(table)) continue;
+      for (const { cell, host, name } of socialRows(table, maps)) {
+        const player = maps.byName.get(core.normalizeName(name)) || null;
+        const observation = player ? maps.observations.get(player.playerKey) : null;
+        const invite = player ? maps.invites.get(player.playerKey) : null;
+        const assessment = player
+          ? core.engagementAssessment(
+            player,
+            maps.observationLists.get(player.playerKey),
+            maps.leaderboardEntries,
+            Date.now(),
+            { dataIndex: maps.dataIndex }
+          )
+          : null;
+        const state = app.leaderboardDecorations.guildMarkerState(player, invite, identity, observation, assessment);
+        const totalLevel = player ? maps.dataIndex.totalLevels.get(player.playerKey) : null;
+        const title = app.leaderboardDecorations.titleFor(player, observation, invite, identity, i18n, assessment, totalLevel);
+        let marker = cell.querySelector?.('.mwi-git-guild-marker[data-location="social"]') || null;
+        if (!marker) marker = app.dom.element("span", {
+          className: "mwi-git-guild-marker mwi-git-guild-marker--social",
+          attributes: { role: "img", tabindex: "0" }
+        });
+        marker.dataset.location = "social";
+        marker.dataset.playerName = name;
+        marker.dataset.state = state;
+        marker.dataset.tooltip = title;
+        if (marker.hasAttribute("title")) marker.removeAttribute("title");
+        marker.setAttribute("aria-label", `${name}: ${title.replace(/\n/g, ", ")}`);
+        app.leaderboardDecorations.setStyleIfChanged(
+          marker,
+          "--mwi-git-marker-size",
+          `${app.leaderboardDecorations.markerSizeForCell(host)}px`
+        );
+        host.classList?.add("mwi-git-marker-host--social");
+        if (host.firstChild !== marker) host.prepend(marker);
+        used.add(marker);
+      }
+    }
+    for (const marker of Array.from(root.document.querySelectorAll('.mwi-git-guild-marker[data-location="social"]'))) {
+      if (!used.has(marker)) {
+        marker.parentElement?.classList?.remove("mwi-git-marker-host--social");
+        marker.remove();
+      }
+    }
+  }
+
+  app.socialDecorations = Object.freeze({
+    CHARACTER_NAME_SELECTOR,
+    SOCIAL_HEADER,
+    normalizedText,
+    isSocialTable,
+    socialRows,
+    decorate,
+    clear
+  });
+})(globalThis);
+
+// ---- src/ui/profile-navigation.js ----
+(function initProfileNavigation(root) {
+  "use strict";
+
+  const app = (root.MWIGuildInviteTracker = root.MWIGuildInviteTracker || {});
+  const CHARACTER_NAME_SELECTOR = '[class*="CharacterName_characterName__"]';
+
+  function nodeHasName(node, name) {
+    const normalized = app.core.normalizeName(name);
+    if (!normalized) return false;
+    const fullText = app.core.normalizeName(node?.innerText || node?.textContent);
+    if (fullText === normalized) return true;
+    if (fullText.endsWith(normalized)) {
+      const decoration = fullText.slice(0, -normalized.length);
+      if (decoration && !/[\p{L}\p{N}_]/u.test(decoration)) return true;
+    }
+    const candidates = [
+      node?.getAttribute?.("data-name"),
+      ...Array.from(node?.querySelectorAll?.("[data-name]") || []).map((child) => child.getAttribute("data-name")),
+      ...Array.from(node?.querySelectorAll?.("*") || [])
+        .filter((child) => !(child.children?.length > 0))
+        .map((child) => child.innerText || child.textContent)
+    ];
+    return candidates.some((candidate) => app.core.normalizeName(candidate) === normalized);
+  }
+
+  function nativeTarget(name) {
+    for (const node of Array.from(root.document.querySelectorAll(CHARACTER_NAME_SELECTOR))) {
+      if (node.closest?.(".mwi-git-panel") || !nodeHasName(node, name)) continue;
+      return node.closest?.('a,button,[role="button"]') || node;
+    }
+    const normalized = app.core.normalizeName(name);
+    for (const marker of Array.from(root.document.querySelectorAll('.mwi-git-guild-marker[data-location="social"]'))) {
+      if (app.core.normalizeName(marker.dataset.playerName) !== normalized) continue;
+      return marker.closest?.("td") || marker.parentElement;
+    }
+    return null;
+  }
+
+  function open(name) {
+    const target = nativeTarget(name);
+    if (!target || typeof target.click !== "function") return false;
+    target.click();
+    return true;
+  }
+
+  app.profileNavigation = Object.freeze({ CHARACTER_NAME_SELECTOR, nodeHasName, nativeTarget, open });
+})(globalThis);
+
 // ---- src/ui/guild-roster-decorations.js ----
 (function initGuildRosterDecorations(root) {
   "use strict";
@@ -4674,7 +4853,7 @@
     return details.filter(Boolean).join(" · ");
   }
 
-  function renderTimeline(container, player, data, i18n, onDelete, existingIndex = null) {
+  function renderTimeline(container, player, data, i18n, onDelete, onOpenProfile, existingIndex = null) {
     dom.clear(container);
     if (!player) {
       container.append(dom.element("div", { className: "mwi-git-empty", text: i18n.t("emptyTimeline") }));
@@ -4690,8 +4869,17 @@
       Date.now(),
       { dataIndex: index }
     );
+    const heading = dom.element("h3");
+    const profileLink = dom.element("button", {
+      className: "mwi-git-profile-link",
+      text: player.currentName,
+      type: "button",
+      attributes: { "aria-label": `${i18n.t("openProfile")}: ${player.currentName}` }
+    });
+    profileLink.addEventListener("click", () => onOpenProfile?.(player.currentName));
+    heading.append(profileLink);
     title.append(
-      dom.element("h3", { text: player.currentName }),
+      heading,
       dom.element("div", {
         className: "mwi-git-detail-guild",
         text: player.latestGuild?.state === "none"
@@ -4857,7 +5045,8 @@
     displaySettings.append(
       settingsTitle,
       displaySwitch("leaderboard", "showOnLeaderboards"),
-      displaySwitch("chat", "showInChat")
+      displaySwitch("chat", "showInChat"),
+      displaySwitch("social", "showInSocial")
     );
     displaySettings.hidden = !settingsOpen;
     settingsButton.addEventListener("click", () => {
@@ -5052,6 +5241,8 @@
         await controller.deletePlayer(selectedKey);
         selectedKey = null;
         await controller.refresh();
+      }, (name) => {
+        if (!controller.openProfile(name)) toast(i18n.t("profileUnavailable"));
       }, currentIndex);
       timelineDirty = false;
     }
@@ -5268,6 +5459,7 @@
       currentLeaderboard
     );
     app.chatDecorations.decorate(currentData, i18n, identity, displayPreferences.chat);
+    app.socialDecorations.decorate(currentData, i18n, identity, displayPreferences.social);
     app.guildRosterDecorations.decorate(currentData, i18n);
   });
 
@@ -5432,6 +5624,9 @@
       decorationScheduler.request();
       return { ...displayPreferences };
     },
+    openProfile(name) {
+      return app.profileNavigation.open(name);
+    },
     async exportJson() {
       if (!identity || !namespace) return panel?.toast(i18n.t("waitIdentity"));
       const backup = await app.importExport.createBackup(await repository.snapshot(namespace), identity);
@@ -5538,6 +5733,7 @@
       app.tooltip.hide();
       app.leaderboardDecorations.clear();
       app.chatDecorations.clear();
+      app.socialDecorations.clear();
       app.guildRosterDecorations.clear();
       sidebar?.destroy();
       panel?.destroy();
