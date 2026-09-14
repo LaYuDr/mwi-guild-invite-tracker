@@ -2,7 +2,7 @@
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
 // @namespace    https://github.com/LaYuDr/mwi-guild-invite-tracker
-// @version      0.5.15
+// @version      0.5.16
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
 // @description:en Passively records leaderboard profile views, guild status, and native guild invite outcomes
 // @match        https://www.milkywayidle.com/*
@@ -21,7 +21,7 @@
 
   app.config = Object.freeze({
     appId: "mwi-guild-invite-tracker",
-    version: "0.5.15",
+    version: "0.5.16",
     schemaVersion: 3,
     databaseName: "mwi-guild-invite-tracker",
     databaseVersion: 2,
@@ -3249,6 +3249,13 @@
     [data-state="insufficient"] .mwi-git-player-dot { background: #ef9a4b; box-shadow: 0 0 8px rgba(239,154,75,.38); }
     [data-state="inviting"] .mwi-git-player-dot { background: #efbf4d; box-shadow: none; }
     [data-state="unknown"] .mwi-git-player-dot { background: #818b9d; box-shadow: none; }
+    .mwi-git-player-dot[data-state="joined"] { background: #ef646f; box-shadow: none; }
+    .mwi-git-player-dot[data-state="own_guild"] { background: #aa83f2; box-shadow: 0 0 8px rgba(170,131,242,.35); }
+    .mwi-git-player-dot[data-state="online"] { background: #48d087; box-shadow: 0 0 9px rgba(72,208,135,.45); }
+    .mwi-git-player-dot[data-state="offline"],
+    .mwi-git-player-dot[data-state="insufficient"] { background: #ef9a4b; box-shadow: 0 0 8px rgba(239,154,75,.38); }
+    .mwi-git-player-dot[data-state="inviting"] { background: #efbf4d; box-shadow: none; }
+    .mwi-git-player-dot[data-state="unknown"] { background: #818b9d; box-shadow: none; }
     .mwi-git-player-copy { grid-column: 2; min-width: 0; }
     .mwi-git-player-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; font-size: 12px; }
     .mwi-git-player-meta { display: block; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--mwi-git-muted); font-size: 10px; }
@@ -4830,6 +4837,7 @@
         }
       });
       const dot = dom.element("span", { className: "mwi-git-player-dot", attributes: { "aria-hidden": "true" } });
+      dot.dataset.state = indicatorState;
       const copy = dom.element("span", { className: "mwi-git-player-copy" });
       copy.append(
         dom.element("span", { className: "mwi-git-player-name", text: player.currentName }),
