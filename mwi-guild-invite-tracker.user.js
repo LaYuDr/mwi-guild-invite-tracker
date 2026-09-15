@@ -2,7 +2,7 @@
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
 // @namespace    https://github.com/LaYuDr/mwi-guild-invite-tracker
-// @version      0.5.16
+// @version      0.5.17
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
 // @description:en Passively records leaderboard profile views, guild status, and native guild invite outcomes
 // @match        https://www.milkywayidle.com/*
@@ -21,12 +21,13 @@
 
   app.config = Object.freeze({
     appId: "mwi-guild-invite-tracker",
-    version: "0.5.16",
+    version: "0.5.17",
     schemaVersion: 3,
     databaseName: "mwi-guild-invite-tracker",
     databaseVersion: 2,
     bridgeMarker: "__MWI_GUILD_INVITE_TRACKER_BRIDGE_V1__",
     bridgeEvent: "mwi-git:protocol:v1",
+    bridgeRequestEvent: "mwi-git:request:v1",
     uiPrefix: "mwi-git",
     settingsKey: "mwi-git:settings:v1",
     lastIdentityKey: "mwi-git:last-identity:v1",
@@ -1147,6 +1148,7 @@
     if (typeof NativeWebSocket !== "function") return;
     const observed = new Set(options.observedTypes);
     const officialHost = /^api(?:-test)?\.milkywayidle(?:cn)?\.com$/i;
+    const sockets = new Set();
 
     function isOfficial(url) {
       try {
@@ -1441,6 +1443,7 @@
     function observe(socket, url) {
       if (!isOfficial(url) || socket.__mwiGitObserved) return socket;
       Object.defineProperty(socket, "__mwiGitObserved", { value: true });
+      sockets.add(socket);
       const originalSend = socket.send;
       socket.send = function trackedSend(data) {
         publish("out", data);
@@ -1448,6 +1451,18 @@
       };
       socket.addEventListener("message", (event) => publish("in", event.data));
       return socket;
+    }
+
+    if (typeof window.addEventListener === "function") {
+      window.addEventListener(options.requestEvent, (event) => {
+        const detail = event?.detail;
+        const name = typeof detail?.characterName === "string" ? detail.characterName.trim() : "";
+        if (!name || name.length > 64) return;
+        const socket = [...sockets].reverse().find((candidate) => candidate?.readyState === NativeWebSocket.OPEN);
+        if (!socket) return;
+        socket.send(JSON.stringify({ type: "view_profile", viewProfileData: { characterName: name } }));
+        if (detail && typeof detail === "object") detail.accepted = true;
+      });
     }
 
     function WrappedWebSocket(url, protocols) {
@@ -1480,8 +1495,17 @@
     return `;(${pageBridgeInstaller.toString()})(${JSON.stringify({
       marker: app.config.bridgeMarker,
       eventName: app.config.bridgeEvent,
-      observedTypes: app.config.observedTypes
+      observedTypes: app.config.observedTypes,
+      requestEvent: app.config.bridgeRequestEvent
     })});`;
+  }
+
+  function requestProfile(name) {
+    const characterName = typeof name === "string" ? name.trim() : "";
+    if (!characterName || characterName.length > 64 || typeof root.CustomEvent !== "function") return false;
+    const detail = { characterName, accepted: false };
+    root.dispatchEvent(new root.CustomEvent(app.config.bridgeRequestEvent, { detail }));
+    return detail.accepted === true;
   }
 
   function inject() {
@@ -1497,7 +1521,7 @@
     return true;
   }
 
-  app.bridge = Object.freeze({ pageBridgeInstaller, source, inject });
+  app.bridge = Object.freeze({ pageBridgeInstaller, source, inject, requestProfile });
 })(globalThis);
 
 // ---- src/runtime/game-protocol.js ----
@@ -4531,11 +4555,13 @@
     return null;
   }
 
-  function open(name) {
+  function open(name, requestProfile = null) {
     const target = nativeTarget(name);
-    if (!target || typeof target.click !== "function") return false;
-    target.click();
-    return true;
+    if (target && typeof target.click === "function") {
+      target.click();
+      return true;
+    }
+    return typeof requestProfile === "function" && requestProfile(name) === true;
   }
 
   app.profileNavigation = Object.freeze({ CHARACTER_NAME_SELECTOR, nodeHasName, nativeTarget, open });
@@ -5645,7 +5671,7 @@
       return { ...displayPreferences };
     },
     openProfile(name) {
-      return app.profileNavigation.open(name);
+      return app.profileNavigation.open(name, app.bridge.requestProfile);
     },
     async exportJson() {
       if (!identity || !namespace) return panel?.toast(i18n.t("waitIdentity"));
