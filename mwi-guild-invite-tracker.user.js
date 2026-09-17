@@ -2,7 +2,7 @@
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
 // @namespace    https://github.com/LaYuDr/mwi-guild-invite-tracker
-// @version      0.5.17
+// @version      0.5.18
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
 // @description:en Passively records leaderboard profile views, guild status, and native guild invite outcomes
 // @match        https://www.milkywayidle.com/*
@@ -21,13 +21,14 @@
 
   app.config = Object.freeze({
     appId: "mwi-guild-invite-tracker",
-    version: "0.5.17",
+    version: "0.5.18",
     schemaVersion: 3,
     databaseName: "mwi-guild-invite-tracker",
     databaseVersion: 2,
     bridgeMarker: "__MWI_GUILD_INVITE_TRACKER_BRIDGE_V1__",
     bridgeEvent: "mwi-git:protocol:v1",
     bridgeRequestEvent: "mwi-git:request:v1",
+    bridgeResponseEvent: "mwi-git:response:v1",
     uiPrefix: "mwi-git",
     settingsKey: "mwi-git:settings:v1",
     lastIdentityKey: "mwi-git:last-identity:v1",
@@ -1455,13 +1456,28 @@
 
     if (typeof window.addEventListener === "function") {
       window.addEventListener(options.requestEvent, (event) => {
-        const detail = event?.detail;
-        const name = typeof detail?.characterName === "string" ? detail.characterName.trim() : "";
-        if (!name || name.length > 64) return;
+        let request = null;
+        try {
+          request = JSON.parse(typeof event?.detail === "string" ? event.detail : "");
+        } catch (_error) {
+          return;
+        }
+        const requestId = typeof request?.requestId === "string" ? request.requestId : "";
+        const name = typeof request?.characterName === "string" ? request.characterName.trim() : "";
+        if (!requestId || requestId.length > 128 || !name || name.length > 64) return;
+        let accepted = false;
         const socket = [...sockets].reverse().find((candidate) => candidate?.readyState === NativeWebSocket.OPEN);
-        if (!socket) return;
-        socket.send(JSON.stringify({ type: "view_profile", viewProfileData: { characterName: name } }));
-        if (detail && typeof detail === "object") detail.accepted = true;
+        if (socket) {
+          try {
+            socket.send(JSON.stringify({ type: "view_profile", viewProfileData: { characterName: name } }));
+            accepted = true;
+          } catch (_error) {
+            accepted = false;
+          }
+        }
+        window.dispatchEvent(new CustomEvent(options.responseEvent, {
+          detail: JSON.stringify({ requestId, accepted })
+        }));
       });
     }
 
@@ -1496,16 +1512,42 @@
       marker: app.config.bridgeMarker,
       eventName: app.config.bridgeEvent,
       observedTypes: app.config.observedTypes,
-      requestEvent: app.config.bridgeRequestEvent
+      requestEvent: app.config.bridgeRequestEvent,
+      responseEvent: app.config.bridgeResponseEvent
     })});`;
   }
 
+  let profileRequestSequence = 0;
+
   function requestProfile(name) {
     const characterName = typeof name === "string" ? name.trim() : "";
-    if (!characterName || characterName.length > 64 || typeof root.CustomEvent !== "function") return false;
-    const detail = { characterName, accepted: false };
-    root.dispatchEvent(new root.CustomEvent(app.config.bridgeRequestEvent, { detail }));
-    return detail.accepted === true;
+    if (
+      !characterName ||
+      characterName.length > 64 ||
+      typeof root.CustomEvent !== "function" ||
+      typeof root.addEventListener !== "function" ||
+      typeof root.removeEventListener !== "function"
+    ) return false;
+    profileRequestSequence += 1;
+    const requestId = `${Date.now().toString(36)}:${profileRequestSequence.toString(36)}`;
+    let accepted = false;
+    function handleResponse(event) {
+      try {
+        const response = JSON.parse(typeof event?.detail === "string" ? event.detail : "");
+        if (response?.requestId === requestId) accepted = response.accepted === true;
+      } catch (_error) {
+        // Cross-context acknowledgements must be valid JSON strings.
+      }
+    }
+    root.addEventListener(app.config.bridgeResponseEvent, handleResponse);
+    try {
+      root.dispatchEvent(new root.CustomEvent(app.config.bridgeRequestEvent, {
+        detail: JSON.stringify({ requestId, characterName })
+      }));
+    } finally {
+      root.removeEventListener(app.config.bridgeResponseEvent, handleResponse);
+    }
+    return accepted;
   }
 
   function inject() {
@@ -4350,7 +4392,7 @@
     }
   }
 
-  function decorate(data, i18n, identity, enabled = true) {
+  function decorate(data, i18n, identity, enabled = true, onOpenProfile = null) {
     if (!enabled) {
       clear();
       return;
@@ -4384,6 +4426,7 @@
         attributes: { role: "img", tabindex: "0" }
       });
       if (marker.dataset.location !== "chat") marker.dataset.location = "chat";
+      marker.dataset.playerName = name;
       if (marker.dataset.state !== state) marker.dataset.state = state;
       if (marker.dataset.tooltip !== title) marker.dataset.tooltip = title;
       if (marker.hasAttribute("title")) marker.removeAttribute("title");
@@ -4394,6 +4437,7 @@
         "--mwi-git-marker-size",
         `${app.leaderboardDecorations.markerSizeForCell(nameNode)}px`
       );
+      app.profileNavigation?.bindMarker(marker, name, onOpenProfile);
       if (nameNode.firstChild !== marker) nameNode.prepend(marker);
       used.add(marker);
     }
@@ -4451,7 +4495,7 @@
     }
   }
 
-  function decorate(data, i18n, identity, enabled = true) {
+  function decorate(data, i18n, identity, enabled = true, onOpenProfile = null) {
     if (!enabled) {
       clear();
       return;
@@ -4492,6 +4536,7 @@
           "--mwi-git-marker-size",
           `${app.leaderboardDecorations.markerSizeForCell(host)}px`
         );
+        app.profileNavigation?.bindMarker(marker, name, onOpenProfile);
         host.classList?.add("mwi-git-marker-host--social");
         if (host.firstChild !== marker) host.prepend(marker);
         used.add(marker);
@@ -4522,6 +4567,8 @@
 
   const app = (root.MWIGuildInviteTracker = root.MWIGuildInviteTracker || {});
   const CHARACTER_NAME_SELECTOR = '[class*="CharacterName_characterName__"]';
+  const markerBindings = new WeakMap();
+  const boundMarkers = new WeakSet();
 
   function nodeHasName(node, name) {
     const normalized = app.core.normalizeName(name);
@@ -4564,7 +4611,31 @@
     return typeof requestProfile === "function" && requestProfile(name) === true;
   }
 
-  app.profileNavigation = Object.freeze({ CHARACTER_NAME_SELECTOR, nodeHasName, nativeTarget, open });
+  function bindMarker(marker, name, onOpenProfile) {
+    const playerName = typeof name === "string" ? name.trim() : "";
+    if (!marker || !playerName || typeof onOpenProfile !== "function") return marker;
+    markerBindings.set(marker, { playerName, onOpenProfile });
+    marker.dataset.playerName = playerName;
+    marker.setAttribute("role", "button");
+    marker.setAttribute("tabindex", "0");
+    marker.setAttribute("aria-haspopup", "dialog");
+    if (boundMarkers.has(marker)) return marker;
+
+    function activate(event) {
+      if (event.type === "keydown" && !["Enter", " ", "Spacebar"].includes(event.key)) return;
+      event.preventDefault?.();
+      event.stopPropagation?.();
+      const binding = markerBindings.get(event.currentTarget || marker);
+      if (binding) binding.onOpenProfile(binding.playerName);
+    }
+
+    marker.addEventListener("click", activate);
+    marker.addEventListener("keydown", activate);
+    boundMarkers.add(marker);
+    return marker;
+  }
+
+  app.profileNavigation = Object.freeze({ CHARACTER_NAME_SELECTOR, nodeHasName, nativeTarget, open, bindMarker });
 })(globalThis);
 
 // ---- src/ui/guild-roster-decorations.js ----
@@ -5496,6 +5567,17 @@
   const i18n = app.localization.createI18n();
   const preferenceStore = app.displayPreferences.createStore(root.localStorage, app.config.settingsKey);
   let displayPreferences = preferenceStore.load();
+
+  function openPlayerProfile(name) {
+    return app.profileNavigation.open(name, app.bridge.requestProfile);
+  }
+
+  function openProfileFromMarker(name) {
+    const opened = openPlayerProfile(name);
+    if (!opened) panel?.toast(i18n.t("profileUnavailable"));
+    return opened;
+  }
+
   const decorationScheduler = app.scheduler.frameScheduler(() => {
     app.leaderboardDecorations.decorate(
       currentData,
@@ -5504,8 +5586,8 @@
       displayPreferences.leaderboard,
       currentLeaderboard
     );
-    app.chatDecorations.decorate(currentData, i18n, identity, displayPreferences.chat);
-    app.socialDecorations.decorate(currentData, i18n, identity, displayPreferences.social);
+    app.chatDecorations.decorate(currentData, i18n, identity, displayPreferences.chat, openProfileFromMarker);
+    app.socialDecorations.decorate(currentData, i18n, identity, displayPreferences.social, openProfileFromMarker);
     app.guildRosterDecorations.decorate(currentData, i18n);
   });
 
@@ -5671,7 +5753,7 @@
       return { ...displayPreferences };
     },
     openProfile(name) {
-      return app.profileNavigation.open(name, app.bridge.requestProfile);
+      return openPlayerProfile(name);
     },
     async exportJson() {
       if (!identity || !namespace) return panel?.toast(i18n.t("waitIdentity"));
