@@ -2,7 +2,7 @@
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
 // @namespace    https://github.com/LaYuDr/mwi-guild-invite-tracker
-// @version      0.5.22
+// @version      0.5.23
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
 // @description:en Passively records leaderboard profile views, guild status, and native guild invite outcomes
 // @match        https://www.milkywayidle.com/*
@@ -21,7 +21,7 @@
 
   app.config = Object.freeze({
     appId: "mwi-guild-invite-tracker",
-    version: "0.5.22",
+    version: "0.5.23",
     schemaVersion: 3,
     databaseName: "mwi-guild-invite-tracker",
     databaseVersion: 2,
@@ -690,6 +690,7 @@
       showInSocial: "社交列表",
       openProfile: "打开个人主页",
       profileUnavailable: "当前页面找不到该玩家的原生名字。",
+      profileQueryUnavailable: "暂时无法查询个人资料，请确认游戏已连接；首次安装插件后请刷新游戏。",
       showUnviewedOnly: "仅显示未查看玩家",
       search: "搜索玩家",
       allStatuses: "全部状态",
@@ -796,6 +797,7 @@
       showInSocial: "Social lists",
       openProfile: "Open player profile",
       profileUnavailable: "The player's native name is not available on the current page.",
+      profileQueryUnavailable: "Cannot request the profile. Check the game connection; refresh the game after first installing the script.",
       showUnviewedOnly: "Show unviewed players only",
       search: "Search players",
       allStatuses: "All statuses",
@@ -1006,14 +1008,14 @@
 
   const leaderboardTypeNames = Object.freeze({
     zh: Object.freeze({
-      standard: "标准模式",
-      steam_standard: "标准模式",
+      standard: "标准",
+      steam_standard: "标准（Steam）",
       ironman: "铁牛模式",
       steam_ironman: "铁牛模式"
     }),
     en: Object.freeze({
       standard: "Standard",
-      steam_standard: "Standard",
+      steam_standard: "Standard (Steam)",
       ironman: "Iron Cow",
       steam_ironman: "Iron Cow"
     })
@@ -4000,6 +4002,7 @@
   const RANK_HEADERS = new Set(["排名", "rank"]);
   const NAME_HEADERS = new Set(["名称", "name"]);
   const CHARACTER_NAME_SELECTOR = '[class*="CharacterName_characterName__"]';
+  const GUILD_NAME_SELECTOR = '[class*="LeaderboardPanel_guildName__"], [class*="GuildName_guildName__"]';
   const FILTERED_ROW_CLASS = "mwi-git-leaderboard-row-filtered";
   const FILTER_TOGGLE_CLASS = "mwi-git-leaderboard-filter-toggle";
   const summaryMapsCache = new WeakMap();
@@ -4083,7 +4086,11 @@
       for (const row of Array.from(body.rows || [])) {
         if (!row.cells || row.cells.length < 2) continue;
         const cell = row.cells[1];
-        const host = markerHostForCell(cell);
+        // Cached guild tables can render before their protocol context catches up.
+        // Only a native character node is positive evidence of a player row.
+        if (cell.querySelector?.(GUILD_NAME_SELECTOR)) continue;
+        const host = cell.querySelector?.(CHARACTER_NAME_SELECTOR);
+        if (!host) continue;
         const dataNameNode = host?.matches?.("[data-name]") ? host : host?.querySelector?.("[data-name]");
         const dataName = String(dataNameNode?.getAttribute?.("data-name") || "").trim();
         const contentName = String(host?.textContent || cell?.textContent || "").trim();
@@ -4165,7 +4172,11 @@
     }
     if (state === "joined" && player.latestGuild?.guildName) parts.push(player.latestGuild.guildName);
     if (observation?.leaderboard) {
-      parts.push(`${i18n.category(observation.leaderboard.categoryHrid)} · ${i18n.t("rank")} ${observation.leaderboard.rank ?? "—"}`);
+      parts.push([
+        i18n.leaderboardType(observation.leaderboard.typeHrid),
+        i18n.category(observation.leaderboard.categoryHrid),
+        `${i18n.t("rank")} ${observation.leaderboard.rank ?? "—"}`
+      ].filter(Boolean).join(" · "));
     }
     if (player?.lastViewedAt) {
       parts.push(`${i18n.t("checkedAt")} ${app.dom.formatDate(player.lastViewedAt, i18n.language)}`);
@@ -4363,15 +4374,20 @@
     let mountedFilter = false;
     for (const table of Array.from(root.document.querySelectorAll("table"))) {
       if (!isLeaderboardTable(table) || !visibleTable(table)) continue;
+      const rows = leaderboardRows(table);
+      if (!rows.length) continue;
       if (!mountedFilter) {
         mountedFilter = Boolean(mountFilterToggle(table, i18n));
       }
-      const rows = leaderboardRows(table);
       updateMarkers(rows, maps, identity, i18n, used);
     }
     if (!mountedFilter) removeFilterToggle();
     for (const marker of Array.from(root.document.querySelectorAll('.mwi-git-guild-marker[data-location="leaderboard"]'))) {
-      if (!used.has(marker)) marker.remove();
+      if (!used.has(marker)) {
+        marker.parentElement?.classList?.remove("mwi-git-marker-host--leaderboard");
+        marker.closest?.("tr")?.classList?.remove(FILTERED_ROW_CLASS);
+        marker.remove();
+      }
     }
   }
 
@@ -4424,16 +4440,18 @@
 
   function chatCharacterName(node, maps) {
     const characterNode = node?.querySelector?.(CHARACTER_NAME_SELECTOR);
-    const allCandidates = leafTextCandidates(characterNode || node, true);
+    const host = characterNode || node;
+    const nameNode = host?.matches?.("[data-name]") ? host : host?.querySelector?.("[data-name]");
+    const nativeName = String(nameNode?.getAttribute?.("data-name") || "").trim();
+    if (nativeName && nativeName.length <= 64) return nativeName;
+    const nativeNameNode = host?.querySelector?.('[class*="CharacterName_name__"]');
+    const nativeText = String(nativeNameNode?.textContent || "").trim();
+    if (nativeText && nativeText.length <= 64) return nativeText;
+    const allCandidates = leafTextCandidates(host, true);
     const candidates = allCandidates.filter((candidate) => !/^\d+$/.test(candidate));
     for (const candidate of candidates) {
       const exact = maps.byName.get(core.normalizeName(candidate));
       if (exact) return exact.currentName;
-    }
-    for (const [normalizedName, player] of maps.byName) {
-      if (candidates.some((candidate) => core.normalizeName(candidate).includes(normalizedName))) {
-        return player.currentName;
-      }
     }
     const numericCandidates = allCandidates.filter((candidate) => /^\d+$/.test(candidate));
     for (const candidate of numericCandidates) {
@@ -4669,6 +4687,14 @@
     return typeof requestProfile === "function" && requestProfile(name) === true;
   }
 
+  function openDirect(name, requestProfile) {
+    const playerName = typeof name === "string" ? name.trim() : "";
+    if (!playerName || playerName.length > 64 || typeof requestProfile !== "function") return false;
+    // Clicking a native name may only open its action menu. A single explicit
+    // profile request lets the game's profile_shared handler display the profile.
+    return requestProfile(playerName) === true;
+  }
+
   function bindMarker(marker, name, onOpenProfile) {
     const playerName = typeof name === "string" ? name.trim() : "";
     if (!marker || !playerName || typeof onOpenProfile !== "function") return marker;
@@ -4683,6 +4709,8 @@
       if (event.type === "keydown" && !["Enter", " ", "Spacebar"].includes(event.key)) return;
       event.preventDefault?.();
       event.stopPropagation?.();
+      if (event.type === "keydown" && event.repeat) return;
+      app.tooltip?.hide?.(marker);
       const binding = markerBindings.get(event.currentTarget || marker);
       if (binding) binding.onOpenProfile(binding.playerName);
     }
@@ -4693,7 +4721,7 @@
     return marker;
   }
 
-  app.profileNavigation = Object.freeze({ CHARACTER_NAME_SELECTOR, nodeHasName, nativeTarget, open, bindMarker });
+  app.profileNavigation = Object.freeze({ CHARACTER_NAME_SELECTOR, nodeHasName, nativeTarget, open, openDirect, bindMarker });
 })(globalThis);
 
 // ---- src/ui/guild-roster-decorations.js ----
@@ -5126,7 +5154,12 @@
       const detail = invite
         ? `${i18n.t("outcome")}：${i18n.t(event.outcome)}`
         : leaderboard
-          ? `${i18n.category(event.categoryHrid)} · ${i18n.t("rank")} ${event.rank ?? "—"} · ${event.value1 ?? "—"}`
+          ? [
+            i18n.leaderboardType(event.typeHrid),
+            i18n.category(event.categoryHrid),
+            `${i18n.t("rank")} ${event.rank ?? "—"}`,
+            event.value1 ?? "—"
+          ].filter((value) => value !== "").join(" · ")
           : [observationDetail(event, i18n), event.changeEvidence?.length ? i18n.evidence(event.changeEvidence[0]) : ""].filter(Boolean).join(" · ");
       item.append(eventTitle, dom.element("div", { className: "mwi-git-event-detail", text: detail }));
       list.append(item);
@@ -5657,8 +5690,8 @@
   }
 
   function openProfileFromMarker(name) {
-    const opened = openPlayerProfile(name);
-    if (!opened) panel?.toast(i18n.t("profileUnavailable"));
+    const opened = app.profileNavigation.openDirect(name, app.bridge.requestProfile);
+    if (!opened) panel?.toast(i18n.t("profileQueryUnavailable"));
     return opened;
   }
 
@@ -5750,13 +5783,6 @@
       await refresh();
       return;
     }
-    if (action.type === "leaderboard") {
-      currentLeaderboard = action.leaderboard
-        ? { ...action.leaderboard, pending: action.pending === true }
-        : null;
-      decorationScheduler.request();
-      return;
-    }
     if (!namespace) {
       if (queuedActions.length < 100 && !["profile_timeout"].includes(action.type)) queuedActions.push(action);
       return;
@@ -5799,9 +5825,20 @@
     const domainEvent = app.gameProtocol.toDomainEvent(event.detail);
     if (!domainEvent) return;
     const actions = tracker.consume(domainEvent);
+    // UI context must follow the socket immediately, even while an earlier
+    // snapshot is still being persisted. Never replay stale UI actions later.
+    for (const action of actions) {
+      if (action.type !== "leaderboard") continue;
+      currentLeaderboard = action.leaderboard
+        ? { ...action.leaderboard, pending: action.pending === true }
+        : null;
+      decorationScheduler.request();
+    }
     protocolChain = protocolChain
       .then(async () => {
-        for (const action of actions) await processAction(action);
+        for (const action of actions) {
+          if (action.type !== "leaderboard") await processAction(action);
+        }
       })
       .catch((error) => console.error("[MWI Guild Invite Tracker] Failed to process game event", error));
   }
