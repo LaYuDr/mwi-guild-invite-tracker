@@ -2,7 +2,7 @@
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
 // @namespace    https://github.com/LaYuDr/mwi-guild-invite-tracker
-// @version      0.5.18
+// @version      0.5.20
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
 // @description:en Passively records leaderboard profile views, guild status, and native guild invite outcomes
 // @match        https://www.milkywayidle.com/*
@@ -21,7 +21,7 @@
 
   app.config = Object.freeze({
     appId: "mwi-guild-invite-tracker",
-    version: "0.5.18",
+    version: "0.5.20",
     schemaVersion: 3,
     databaseName: "mwi-guild-invite-tracker",
     databaseVersion: 2,
@@ -3046,13 +3046,13 @@
   const app = (root.MWIGuildInviteTracker = root.MWIGuildInviteTracker || {});
   const css = `
     :root {
-      --mwi-git-space: #0f1621;
-      --mwi-git-panel: #151e2c;
-      --mwi-git-panel-2: #1b2737;
-      --mwi-git-metal: #314257;
-      --mwi-git-text: #edf1f5;
-      --mwi-git-muted: #9aabc0;
-      --mwi-git-scan: #57d5ca;
+      --mwi-git-space: #202238;
+      --mwi-git-panel: #24253c;
+      --mwi-git-panel-2: #343650;
+      --mwi-git-metal: #474969;
+      --mwi-git-text: #f4f5ff;
+      --mwi-git-muted: #c9cbeb;
+      --mwi-git-scan: #77f3d0;
       --mwi-git-warning: #e5a94d;
       --mwi-git-error: #e46f61;
       --mwi-git-shield: #7299c7;
@@ -3103,16 +3103,16 @@
       display: grid;
       justify-items: end;
       background: rgba(5, 9, 15, .62);
-      backdrop-filter: blur(3px);
+
     }
     .mwi-git-backdrop[hidden] { display: none; }
     .mwi-git-panel {
       width: min(980px, calc(100vw - 24px));
       height: 100%;
       color: var(--mwi-git-text);
-      background:
-        linear-gradient(90deg, rgba(76,201,192,.04), transparent 14%),
-        var(--mwi-git-space);
+      background: var(--mwi-git-space);
+      color-scheme: dark;
+      container-type: inline-size;
       border-left: 1px solid var(--mwi-git-metal);
       box-shadow: -22px 0 60px var(--mwi-git-shadow);
       font-family: inherit;
@@ -3144,33 +3144,37 @@
       container-type: inline-size;
     }
     @keyframes mwi-git-enter { from { transform: translateX(18px); opacity: .7; } }
-    .mwi-git-shell { height: 100%; display: grid; grid-template-rows: auto auto auto auto minmax(0, 1fr); }
+    .mwi-git-shell { height: 100%; display: flex; flex-direction: column; gap: 8px; box-sizing: border-box; padding: 12px; overflow-y: auto; }
+    .mwi-git-shell > :not(.mwi-git-body) { flex-shrink: 0; }
     .mwi-git-header {
       display: flex;
       align-items: center;
       gap: 10px;
-      padding: 11px 14px 10px;
+      padding: 0 0 8px;
       border-bottom: 1px solid var(--mwi-git-metal);
-      background: linear-gradient(180deg, rgba(49,66,87,.18), rgba(15,22,33,.25));
+      background: transparent;
     }
     .mwi-git-title-block { min-width: 0; flex: 1; }
     .mwi-git-title { margin: 0; font-size: 17px; line-height: 1.2; letter-spacing: .01em; }
-    .mwi-git-header-meta { display: flex; min-width: 0; align-items: center; gap: 6px 10px; margin-top: 4px; color: var(--mwi-git-muted); font-size: 10px; line-height: 1.25; }
+    .mwi-git-header-meta { display: flex; min-width: 0; align-items: center; gap: 6px 10px; margin-top: 4px; color: var(--mwi-git-muted); font-size: 11px; line-height: 1.25; }
     .mwi-git-local { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 5px; }
     .mwi-git-local::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--mwi-git-scan); }
     .mwi-git-identity { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .mwi-git-version { flex: 0 0 auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
     .mwi-git-icon-button,
     .mwi-git-button {
       border: 1px solid var(--mwi-git-metal);
       border-radius: 5px;
       color: var(--mwi-git-text);
       background: var(--mwi-git-panel-2);
-      font: 600 12px/1 inherit;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 600;
       cursor: pointer;
     }
     .mwi-git-icon-button { width: 30px; height: 30px; font-size: 17px; }
     .mwi-git-button { min-height: 30px; padding: 0 9px; }
-    .mwi-git-button:hover, .mwi-git-icon-button:hover { border-color: var(--mwi-git-scan); background: #213044; }
+    .mwi-git-button:hover, .mwi-git-icon-button:hover { border-color: var(--mwi-git-scan); background: #414461; }
     .mwi-git-button--danger { color: #ffd7d2; border-color: rgba(228,111,97,.55); }
     .mwi-git-settings-button { min-height: 28px; white-space: nowrap; }
     .mwi-git-settings-button[aria-expanded="true"] { color: var(--mwi-git-scan); border-color: rgba(87,213,202,.58); }
@@ -3180,7 +3184,7 @@
       align-items: center;
       gap: 6px 14px;
       padding: 7px 14px;
-      border-bottom: 1px solid rgba(52,70,91,.72);
+      border-bottom: 1px solid #3f4160;
       background: var(--mwi-git-panel);
     }
     .mwi-git-display-settings[hidden] { display: none; }
@@ -3196,7 +3200,7 @@
       border: 1px solid var(--mwi-git-metal);
       border-radius: 999px;
       appearance: none;
-      background: #101a28;
+      background: #292a46;
       cursor: pointer;
       transition: border-color 140ms ease, background 140ms ease;
     }
@@ -3226,13 +3230,15 @@
       border: 0;
       border-bottom: 1px solid rgba(52,70,91,.7);
       color: var(--mwi-git-muted);
-      background: rgba(13,20,32,.96);
-      font: 650 11px/1.3 inherit;
+      background: #292a46;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 650;
       letter-spacing: .04em;
       text-align: left;
       cursor: pointer;
     }
-    .mwi-git-section-toggle:hover { color: var(--mwi-git-text); background: rgba(27,40,57,.96); }
+    .mwi-git-section-toggle:hover { color: var(--mwi-git-text); background: #343650; }
     .mwi-git-section-chevron {
       flex: 0 0 auto;
       width: 7px;
@@ -3252,7 +3258,7 @@
       grid-template-columns: minmax(170px, 1.35fr) repeat(3, minmax(112px, .8fr));
       gap: 6px;
       padding: 8px 14px;
-      border-bottom: 1px solid rgba(52,70,91,.72);
+      border-bottom: 1px solid #3f4160;
       background: var(--mwi-git-panel);
     }
     .mwi-git-input,
@@ -3263,24 +3269,22 @@
       border: 1px solid var(--mwi-git-metal);
       border-radius: 5px;
       color: var(--mwi-git-text);
-      background: #101a28;
-      font: 12px/1 inherit;
+      background: #292a46;
+      font: inherit;
+      font-size: 12px;
     }
     .mwi-git-input::placeholder { color: #8394aa; }
-    .mwi-git-actions { display: flex; flex-wrap: wrap; gap: 6px; padding: 7px 14px; border-bottom: 1px solid rgba(49,66,87,.72); }
+    .mwi-git-actions { display: flex; flex-wrap: wrap; gap: 6px; padding: 7px 14px; border-bottom: 1px solid #3f4160; }
     .mwi-git-summary { min-width: 0; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
-    .mwi-git-body { min-height: 0; display: grid; grid-template-columns: minmax(280px, 39%) 1fr; }
-    .mwi-git-list-pane, .mwi-git-detail-pane { min-height: 0; overflow: auto; }
-    .mwi-git-list-pane { border-right: 1px solid var(--mwi-git-metal); background: rgba(21,31,46,.75); }
+    .mwi-git-body { flex: 1; min-height: 260px; display: grid; grid-template-columns: minmax(240px, 39%) minmax(0, 1fr); overflow: hidden; border: 1px solid var(--mwi-git-metal); border-radius: 6px; }
+    .mwi-git-list-pane, .mwi-git-detail-pane { min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; background: var(--mwi-git-panel); }
+    .mwi-git-list-pane { border-right: 1px solid var(--mwi-git-metal); }
     .mwi-git-list-pane > .mwi-git-section-toggle,
     .mwi-git-detail-pane > .mwi-git-section-toggle { position: sticky; top: 0; z-index: 2; }
     .mwi-git-detail-content { min-height: 0; }
-    .mwi-git-body[data-players-collapsed="true"] { grid-template-columns: minmax(120px, 20%) 1fr; }
-    .mwi-git-body[data-timeline-collapsed="true"] { grid-template-columns: 1fr minmax(120px, 20%); }
-    .mwi-git-body[data-players-collapsed="true"][data-timeline-collapsed="true"] {
-      grid-template-columns: 1fr 1fr;
-      align-content: start;
-    }
+    .mwi-git-body[data-players-collapsed="true"] { grid-template-columns: minmax(120px, 20%) minmax(0, 1fr); }
+    .mwi-git-body[data-timeline-collapsed="true"] { grid-template-columns: minmax(0, 1fr) minmax(120px, 20%); }
+    .mwi-git-body[data-players-collapsed="true"][data-timeline-collapsed="true"] { grid-template-columns: 1fr 1fr; align-content: start; }
     .mwi-git-player {
       box-sizing: border-box;
       width: 100%;
@@ -3291,7 +3295,7 @@
       align-items: center;
       padding: 8px 12px;
       border: 0;
-      border-bottom: 1px solid rgba(52,70,91,.45);
+      border-bottom: 1px solid #3f4160;
       color: inherit;
       background: transparent;
       text-align: left;
@@ -3299,7 +3303,7 @@
     }
     .mwi-git-player-spacer { width: 1px; pointer-events: none; }
     .mwi-git-player:hover { background: rgba(76,201,192,.055); }
-    .mwi-git-player[aria-selected="true"] { background: rgba(87,213,202,.10); box-shadow: inset 2px 0 var(--mwi-git-scan); }
+    .mwi-git-player[aria-selected="true"] { background: #2a3a45; box-shadow: inset 1px 0 var(--mwi-git-scan); }
     .mwi-git-player-dot { grid-column: 1; display: block; width: 6px; height: 6px; border-radius: 50%; background: #818b9d; }
     [data-status="no_guild"][data-engagement-state="offline"] .mwi-git-player-dot,
     [data-status="no_guild"][data-engagement-state="insufficient"] .mwi-git-player-dot { background: #ef9a4b; box-shadow: 0 0 8px rgba(239,154,75,.38); }
@@ -3324,10 +3328,10 @@
     .mwi-git-player-dot[data-state="unknown"] { background: #818b9d; box-shadow: none; }
     .mwi-git-player-copy { grid-column: 2; min-width: 0; }
     .mwi-git-player-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; font-size: 12px; }
-    .mwi-git-player-meta { display: block; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--mwi-git-muted); font-size: 10px; }
+    .mwi-git-player-meta { display: block; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--mwi-git-muted); font-size: 11px; }
     .mwi-git-player-time { grid-column: 3; color: var(--mwi-git-muted); font: 10px/1.25 ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; white-space: nowrap; }
     .mwi-git-empty { padding: 24px 18px; color: var(--mwi-git-muted); font-size: 12px; line-height: 1.6; text-align: center; }
-    .mwi-git-detail-head { display: flex; gap: 10px; align-items: center; padding: 10px 14px; border-bottom: 1px solid rgba(49,66,87,.7); }
+    .mwi-git-detail-head { display: flex; gap: 10px; align-items: center; padding: 10px 14px; border-bottom: 1px solid #3f4160; }
     .mwi-git-detail-head h3 { min-width: 0; flex: 1; margin: 0; overflow: hidden; text-overflow: ellipsis; font-size: 15px; }
     .mwi-git-profile-link {
       max-width: 100%;
@@ -3343,16 +3347,16 @@
       cursor: pointer;
     }
     .mwi-git-profile-link:hover { color: var(--mwi-git-scan); text-decoration: underline; text-underline-offset: 2px; }
-    .mwi-git-detail-guild { margin-top: 2px; color: var(--mwi-git-muted); font-size: 10px; }
+    .mwi-git-detail-guild { margin-top: 2px; color: var(--mwi-git-muted); font-size: 11px; }
     .mwi-git-timeline { position: relative; margin: 0; padding: 8px 14px 20px 33px; list-style: none; }
     .mwi-git-timeline::before { content: ""; position: absolute; top: 11px; bottom: 15px; left: 19px; width: 1px; background: linear-gradient(var(--mwi-git-scan), rgba(87,213,202,.10)); }
-    .mwi-git-event { position: relative; margin: 0; padding: 8px 0 9px; border-bottom: 1px solid rgba(49,66,87,.45); }
+    .mwi-git-event { position: relative; margin: 0; padding: 8px 0 9px; border-bottom: 1px solid #3f4160; }
     .mwi-git-event::before { content: ""; position: absolute; left: -17px; top: 13px; width: 6px; height: 6px; border: 2px solid var(--mwi-git-space); border-radius: 50%; background: var(--mwi-git-scan); box-shadow: 0 0 0 1px var(--mwi-git-scan); }
     .mwi-git-event--invite::before { background: var(--mwi-git-warning); box-shadow: 0 0 0 1px var(--mwi-git-warning); }
     .mwi-git-event--invite[data-outcome="already_in_guild"]::before { background: var(--mwi-git-error); box-shadow: 0 0 0 1px var(--mwi-git-error); }
     .mwi-git-event-title { display: flex; justify-content: space-between; gap: 10px; font-size: 11px; font-weight: 700; }
     .mwi-git-event-time { color: var(--mwi-git-muted); font: 10px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
-    .mwi-git-event-detail { margin-top: 3px; color: var(--mwi-git-muted); font-size: 10px; line-height: 1.45; }
+    .mwi-git-event-detail { margin-top: 3px; color: var(--mwi-git-muted); font-size: 11px; line-height: 1.45; }
     .mwi-git-guild-marker {
       --mwi-git-marker-size: 1.2em;
       position: relative;
@@ -3381,7 +3385,7 @@
       border: 1px solid rgba(126, 149, 177, .5);
       border-radius: 5px;
       color: var(--mwi-git-text);
-      background: #111b2a;
+      background: #24253c;
       box-shadow: 0 4px 14px rgba(0, 0, 0, .45);
       font: 11px/1.45 ui-sans-serif, system-ui, sans-serif;
       text-align: left;
@@ -3487,71 +3491,52 @@
     .mwi-git-dialog-backdrop { position: fixed; inset: 0; z-index: 2147483010; display: grid; place-items: center; padding: 18px; background: rgba(5,9,15,.76); }
     .mwi-git-dialog { width: min(500px, 100%); max-height: 85vh; overflow: auto; padding: 16px; border: 1px solid var(--mwi-git-metal); border-radius: 8px; color: var(--mwi-git-text); background: var(--mwi-git-panel); box-shadow: 0 24px 70px var(--mwi-git-shadow); }
     .mwi-git-dialog h2 { margin: 0 0 10px; font-size: 16px; }
-    .mwi-git-preview { display: grid; grid-template-columns: minmax(80px, auto) minmax(0, 1fr); gap: 6px 14px; margin: 10px 0; padding: 10px 0; border-block: 1px solid rgba(49,66,87,.7); font-size: 11px; }
+    .mwi-git-preview { display: grid; grid-template-columns: minmax(80px, auto) minmax(0, 1fr); gap: 6px 14px; margin: 10px 0; padding: 10px 0; border-block: 1px solid #3f4160; font-size: 11px; }
     .mwi-git-preview > :nth-child(odd) { color: var(--mwi-git-muted); font-weight: 500; }
     .mwi-git-preview > :nth-child(even) { overflow-wrap: anywhere; text-align: right; }
     .mwi-git-warning { color: #ffd99c; font-size: 12px; line-height: 1.5; }
     .mwi-git-dialog-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 14px; }
     .mwi-git-toast { position: fixed; right: 18px; bottom: 124px; z-index: 2147483020; max-width: min(420px, calc(100vw - 36px)); padding: 11px 14px; border: 1px solid var(--mwi-git-metal); border-radius: 7px; color: var(--mwi-git-text); background: var(--mwi-git-panel-2); box-shadow: 0 14px 36px var(--mwi-git-shadow); font-size: 12px; }
-    .mwi-git-panel--native .mwi-git-header { gap: 7px; padding: 8px 10px 7px; }
-    .mwi-git-panel--native .mwi-git-title { font-size: 15px; }
-    .mwi-git-panel--native .mwi-git-header-meta { gap: 5px 8px; margin-top: 3px; font-size: 10px; }
-    .mwi-git-panel--native .mwi-git-icon-button { width: 30px; min-width: 30px; height: 30px; }
-    .mwi-git-panel--native .mwi-git-toolbar {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 5px;
-      padding: 6px 10px;
+    .mwi-git-panel--native .mwi-git-header { gap: 7px; }
+    .mwi-git-panel--native .mwi-git-title { font-size: 17px; }
+    .mwi-git-header-meta { flex-wrap: wrap; }
+    .mwi-git-local { display: none; }
+    .mwi-git-summary { margin-left: 0; }
+    .mwi-git-collapsible { border: 1px solid var(--mwi-git-metal); border-radius: 5px; overflow: hidden; }
+    .mwi-git-section-toggle { min-height: 34px; border-bottom: 0; }
+    .mwi-git-toolbar { border-bottom: 0; }
+    .mwi-git-actions { border-bottom: 0; }
+    .mwi-git-display-settings { border: 1px solid var(--mwi-git-metal); border-radius: 5px; grid-template-columns: 1fr; }
+    .mwi-git-switch-row { min-height: 30px; }
+    .mwi-git-button:disabled { opacity: .5; cursor: not-allowed; }
+    .mwi-git-input { caret-color: var(--mwi-git-scan); }
+    .mwi-git-list-pane:focus-visible, .mwi-git-detail-pane:focus-visible { outline: 2px solid var(--mwi-git-scan); outline-offset: -2px; }
+    @container (max-width: 600px) {
+      .mwi-git-body { grid-template-columns: 1fr; grid-template-rows: minmax(130px, 40%) minmax(0, 1fr); }
+      .mwi-git-body[data-players-collapsed="true"] { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+      .mwi-git-body[data-timeline-collapsed="true"] { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; }
+      .mwi-git-body[data-players-collapsed="true"][data-timeline-collapsed="true"] { grid-template-columns: 1fr; grid-template-rows: auto auto; }
+      .mwi-git-list-pane { border-right: 0; border-bottom: 1px solid var(--mwi-git-metal); }
+      .mwi-git-toolbar { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 8px; }
+      .mwi-git-toolbar > :first-child { grid-column: 1 / -1; }
+      .mwi-git-header-meta { font-size: 10px; gap: 4px 6px; }
+      .mwi-git-shell { padding: 10px; }
+      .mwi-git-actions { padding: 8px; }
+      .mwi-git-button { min-height: 32px; }
     }
-    .mwi-git-panel--native .mwi-git-toolbar > :first-child { grid-column: 1 / -1; }
-    .mwi-git-panel--native .mwi-git-input,
-    .mwi-git-panel--native .mwi-git-select { height: 29px; padding-inline: 7px; font-size: 10px; }
-    .mwi-git-panel--native .mwi-git-actions { gap: 5px; padding: 6px 10px; }
-    .mwi-git-panel--native .mwi-git-display-settings { grid-template-columns: 1fr auto auto; gap: 6px 10px; padding: 6px 10px; }
-    .mwi-git-panel--native .mwi-git-switch-row { min-height: 24px; }
-    .mwi-git-panel--native .mwi-git-section-toggle { min-height: 25px; padding: 5px 10px; }
-    .mwi-git-panel--native .mwi-git-button { min-height: 28px; padding-inline: 7px; font-size: 10px; }
-    .mwi-git-panel--native .mwi-git-body {
-      grid-template-columns: 1fr;
-      grid-template-rows: minmax(160px, 38%) minmax(0, 1fr);
-    }
-    .mwi-git-panel--native .mwi-git-body[data-players-collapsed="true"] { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
-    .mwi-git-panel--native .mwi-git-body[data-timeline-collapsed="true"] { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; }
-    .mwi-git-panel--native .mwi-git-body[data-players-collapsed="true"][data-timeline-collapsed="true"] { grid-template-rows: auto auto; }
-    .mwi-git-panel--native .mwi-git-list-pane { border-right: 0; border-bottom: 1px solid var(--mwi-git-metal); }
-    .mwi-git-panel--native .mwi-git-player { padding: 7px 10px; }
-    .mwi-git-panel--native .mwi-git-detail-head { padding: 8px 10px; }
-    .mwi-git-panel--native .mwi-git-detail-head h3 { font-size: 14px; }
-    .mwi-git-panel--native .mwi-git-timeline { padding: 6px 10px 18px 31px; }
-    .mwi-git-panel--native .mwi-git-timeline::before { left: 18px; }
-    .mwi-git-panel--native .mwi-git-event::before { left: -16px; }
     @container (max-width: 350px) {
-      .mwi-git-panel--native .mwi-git-toolbar { grid-template-columns: 1fr; }
-      .mwi-git-panel--native .mwi-git-toolbar > *,
-      .mwi-git-panel--native .mwi-git-toolbar > :first-child,
-      .mwi-git-panel--native .mwi-git-local { display: none; }
-      .mwi-git-panel--native .mwi-git-summary { display: none; }
-      .mwi-git-panel--native .mwi-git-display-settings { grid-template-columns: 1fr; }
+      .mwi-git-shell { padding: 8px; }
+      .mwi-git-title { font-size: 15px; }
+      .mwi-git-identity { max-width: 100px; }
+      .mwi-git-summary { flex-basis: 100%; font-size: 10px; }
+      .mwi-git-event-title { flex-wrap: wrap; gap: 4px; }
     }
     @media (max-width: 760px) {
       .mwi-git-panel:not(.mwi-git-panel--native) { width: 100vw; }
-      .mwi-git-toolbar { grid-template-columns: 1fr 1fr; }
-      .mwi-git-body { grid-template-columns: 1fr; grid-template-rows: minmax(170px, 38%) minmax(0, 1fr); }
-      .mwi-git-body[data-players-collapsed="true"] { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
-      .mwi-git-body[data-timeline-collapsed="true"] { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; }
-      .mwi-git-body[data-players-collapsed="true"][data-timeline-collapsed="true"] { grid-template-rows: auto auto; }
-      .mwi-git-list-pane { border-right: 0; border-bottom: 1px solid var(--mwi-git-metal); }
-      .mwi-git-summary { width: 100%; margin: 3px 0 0; }
-      .mwi-git-actions { padding-inline: 12px; }
-    }
-    @media (max-width: 480px) {
-      #mwi-git-launcher { right: 10px; bottom: 62px; }
-      .mwi-git-header, .mwi-git-toolbar { padding-inline: 12px; }
-      .mwi-git-toolbar { grid-template-columns: 1fr; }
-      .mwi-git-local { display: none; }
     }
     @media (prefers-reduced-motion: reduce) {
       .mwi-git-panel { animation: none; }
-      *, *::before, *::after { scroll-behavior: auto !important; }
+      .mwi-git-panel *, .mwi-git-panel *::before, .mwi-git-panel *::after { scroll-behavior: auto !important; transition: none !important; }
     }
   `;
 
@@ -3782,6 +3767,40 @@
     return best;
   }
 
+  function suppressStaleMounts(found, currentTab, currentPanel) {
+    let staleTabWasSelected = false;
+    for (const candidate of Array.from(found?.tabBar?.children || [])) {
+      if (candidate === currentTab || candidate.dataset?.mwiGitTab !== "true") continue;
+      staleTabWasSelected ||= candidate.classList?.contains?.("Mui-selected") ||
+        candidate.getAttribute?.("aria-selected") === "true";
+      candidate.classList?.remove?.("Mui-selected");
+      candidate.setAttribute?.("aria-selected", "false");
+      candidate.setAttribute?.("aria-hidden", "true");
+      candidate.setAttribute?.("tabindex", "-1");
+      candidate.dataset.mwiGitSuperseded = "true";
+      candidate.hidden = true;
+    }
+    for (const candidate of Array.from(found?.panelHost?.children || [])) {
+      if (candidate === currentPanel || !candidate.classList?.contains?.("mwi-git-panel")) continue;
+      candidate.setAttribute?.("aria-hidden", "true");
+      candidate.dataset.mwiGitSuperseded = "true";
+      candidate.hidden = true;
+    }
+    return staleTabWasSelected;
+  }
+
+  function hasVisibleStaleMounts(found, currentTab, currentPanel) {
+    const staleTab = Array.from(found?.tabBar?.children || []).some(
+      (candidate) => candidate !== currentTab && candidate.dataset?.mwiGitTab === "true" && !candidate.hidden
+    );
+    if (staleTab) return true;
+    return Array.from(found?.panelHost?.children || []).some(
+      (candidate) => candidate !== currentPanel &&
+        candidate.classList?.contains?.("mwi-git-panel") &&
+        !candidate.hidden
+    );
+  }
+
   function createController(options) {
     const panel = options.panel;
     const i18n = options.i18n;
@@ -3868,11 +3887,13 @@
         if (integration && (!tab?.isConnected || !panel.isNativeMounted())) clearMount();
         return false;
       }
+      const staleTabWasSelected = suppressStaleMounts(found, tab, panel.element);
       if (mountedIn(found)) {
         panel.disableFallback();
+        if (staleTabWasSelected) show();
         return true;
       }
-      const reopen = active;
+      const reopen = active || staleTabWasSelected;
       clearMount();
       integration = found;
       tab = found.tabPrototype.cloneNode(true);
@@ -3902,6 +3923,7 @@
       };
       found.tabBar.addEventListener("pointerdown", tabBarPointerHandler, true);
       found.tabBar.addEventListener("click", tabBarClickHandler);
+      suppressStaleMounts(found, tab, panel.element);
       panel.disableFallback();
       if (reopen) show();
       return true;
@@ -3922,7 +3944,12 @@
       if (!mounted) scheduleEnsure();
       if (typeof root.MutationObserver === "function" && !observer) {
         observer = new root.MutationObserver(() => {
-          if (!integration || !tab?.isConnected || !panel.isNativeMounted()) scheduleEnsure();
+          if (
+            !integration ||
+            !tab?.isConnected ||
+            !panel.isNativeMounted() ||
+            hasVisibleStaleMounts(integration, tab, panel.element)
+          ) scheduleEnsure();
         });
         observer.observe(root.document.documentElement || root.document, { childList: true, subtree: true });
       }
@@ -3953,6 +3980,8 @@
     SIDEBAR_ACTIVATION_EVENT,
     sidebarLocale,
     findSidebarIntegration,
+    suppressStaleMounts,
+    hasVisibleStaleMounts,
     createActivationCoordinator,
     createDocumentActivationCoordinator,
     createController
@@ -3985,6 +4014,28 @@
     return map;
   }
 
+  function preferNameMatch(candidate, previous, name) {
+    if (!previous) return true;
+    const priority = (player) => {
+      const viewedAt = Date.parse(player.lastViewedAt) || 0;
+      const guildAt = Date.parse(player.latestGuild?.observedAt) || 0;
+      const knownGuild = ["joined", "none"].includes(player.latestGuild?.state);
+      return [
+        Number(core.normalizeName(player.currentName) === name),
+        Number(Boolean(viewedAt || knownGuild)),
+        Math.max(viewedAt, guildAt),
+        Number(core.nullableNumber(player.characterId) !== null),
+        Date.parse(player.lastSeenAt) || 0
+      ];
+    };
+    const next = priority(candidate);
+    const current = priority(previous);
+    for (let index = 0; index < next.length; index += 1) {
+      if (next[index] !== current[index]) return next[index] > current[index];
+    }
+    return String(candidate.playerKey) < String(previous.playerKey);
+  }
+
   function summaryMaps(data) {
     const source = data && typeof data === "object" ? data : {};
     const cached = summaryMapsCache.get(source);
@@ -3992,8 +4043,12 @@
     const index = core.dataIndex(source);
     const byName = new Map();
     for (const player of source.players || []) {
-      byName.set(core.normalizeName(player.currentName), player);
-      for (const alias of player.nameAliases || []) byName.set(core.normalizeName(alias), player);
+      // Old name-only records must not shadow confirmed profiles when IndexedDB
+      // returns them later. Current names also take precedence over old aliases.
+      for (const value of [player.currentName, ...(player.nameAliases || [])]) {
+        const name = core.normalizeName(value);
+        if (name && preferNameMatch(player, byName.get(name), name)) byName.set(name, player);
+      }
     }
     const maps = {
       byName,
@@ -5122,8 +5177,9 @@
     const headerMeta = dom.element("div", { className: "mwi-git-header-meta" });
     const local = dom.element("span", { className: "mwi-git-local", text: i18n.t("localOnly") });
     const identityLabel = dom.element("span", { className: "mwi-git-identity", text: i18n.t("waitIdentity") });
+    const version = dom.element("span", { className: "mwi-git-version", text: `v${app.config.version}` });
     const summary = dom.element("span", { className: "mwi-git-summary" });
-    headerMeta.append(local, identityLabel, summary);
+    headerMeta.append(local, identityLabel, version, summary);
     titleBlock.append(title, headerMeta);
     const settingsButton = dom.element("button", {
       className: "mwi-git-button mwi-git-settings-button",
@@ -5132,7 +5188,7 @@
       attributes: { "aria-controls": "mwi-git-display-settings", "aria-expanded": String(settingsOpen) }
     });
     const close = dom.element("button", { className: "mwi-git-icon-button mwi-git-close-button", text: "×", type: "button", title: i18n.t("close"), attributes: { "aria-label": i18n.t("close") } });
-    header.append(titleBlock, local, settingsButton, close);
+    header.append(titleBlock, settingsButton, close);
 
     const displaySettings = dom.element("section", {
       className: "mwi-git-display-settings",
@@ -5328,7 +5384,7 @@
       }
       const window = app.historyView.virtualWindow(
         visiblePlayers.length,
-        Math.max(0, listPane.scrollTop - 27),
+        Math.max(0, listPane.scrollTop - 34),
         listPane.clientHeight || 600,
         playerRowHeight,
         playerOverscan
@@ -5382,7 +5438,7 @@
       launcher.setAttribute("aria-expanded", "true");
       render();
       controller.refresh();
-      search.focus();
+      settingsButton.focus();
     }
     function hide() {
       if (nativeMode) panel.hidden = true;
