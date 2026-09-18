@@ -2,7 +2,7 @@
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
 // @namespace    https://github.com/LaYuDr/mwi-guild-invite-tracker
-// @version      0.5.21
+// @version      0.5.22
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
 // @description:en Passively records leaderboard profile views, guild status, and native guild invite outcomes
 // @match        https://www.milkywayidle.com/*
@@ -21,7 +21,7 @@
 
   app.config = Object.freeze({
     appId: "mwi-guild-invite-tracker",
-    version: "0.5.21",
+    version: "0.5.22",
     schemaVersion: 3,
     databaseName: "mwi-guild-invite-tracker",
     databaseVersion: 2,
@@ -683,7 +683,7 @@
       title: "邀请",
       subtitle: "招募记录",
       close: "关闭",
-      settings: "显示设置",
+      settings: "设置",
       indicatorLocations: "指示器显示",
       showOnLeaderboards: "排行榜",
       showInChat: "聊天室",
@@ -789,7 +789,7 @@
       title: "Recruitment archive",
       subtitle: "Leaderboard views and guild invitations",
       close: "Close",
-      settings: "Display settings",
+      settings: "Settings",
       indicatorLocations: "Indicator locations",
       showOnLeaderboards: "Leaderboards",
       showInChat: "Chat",
@@ -3476,11 +3476,11 @@
     .mwi-git-leaderboard-row-filtered { display: none !important; }
     .mwi-git-invite-age-cell {
       position: relative !important;
-      overflow: visible !important;
+      padding-inline-end: 5em !important;
     }
     .mwi-git-invite-age {
       position: absolute;
-      inset-inline-end: calc(100% + .75em);
+      inset-inline-end: .75em;
       top: 50%;
       min-width: 4em;
       transform: translateY(-50%);
@@ -5219,7 +5219,7 @@
 
     const displaySettings = dom.element("section", {
       className: "mwi-git-display-settings",
-      attributes: { id: "mwi-git-display-settings", "aria-label": i18n.t("indicatorLocations") }
+      attributes: { id: "mwi-git-display-settings", "aria-label": i18n.t("settings") }
     });
     const settingsTitle = dom.element("h3", { text: i18n.t("indicatorLocations") });
 
@@ -5342,10 +5342,11 @@
 
     filterSection.append(createSectionToggle("filters", "filtersSection", toolbar), toolbar);
     actionSection.append(createSectionToggle("actions", "dataSection", actions), actions);
+    displaySettings.append(actionSection);
     listPane.append(createSectionToggle("players", "players", list), list);
     detailPane.append(createSectionToggle("timeline", "timeline", detailContent), detailContent);
     body.append(listPane, detailPane);
-    shell.append(header, displaySettings, filterSection, actionSection, body);
+    shell.append(header, displaySettings, filterSection, body);
     panel.append(shell);
     backdrop.append(panel);
 
