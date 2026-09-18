@@ -2,7 +2,7 @@
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
 // @namespace    https://github.com/LaYuDr/mwi-guild-invite-tracker
-// @version      0.5.23
+// @version      0.5.24
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
 // @description:en Passively records leaderboard profile views, guild status, and native guild invite outcomes
 // @match        https://www.milkywayidle.com/*
@@ -21,7 +21,7 @@
 
   app.config = Object.freeze({
     appId: "mwi-guild-invite-tracker",
-    version: "0.5.23",
+    version: "0.5.24",
     schemaVersion: 3,
     databaseName: "mwi-guild-invite-tracker",
     databaseVersion: 2,
@@ -467,6 +467,7 @@
     const cached = dataIndexCache.get(source);
     if (cached) return cached;
     const invites = new Map();
+    const inviteLists = new Map();
     const observationLists = new Map();
     const observations = new Map();
     const leaderboardEntryLists = new Map();
@@ -476,6 +477,8 @@
     const totalLevels = new Map();
 
     for (const event of source.inviteEvents || []) {
+      if (!inviteLists.has(event.playerKey)) inviteLists.set(event.playerKey, []);
+      inviteLists.get(event.playerKey).push(event);
       const previous = invites.get(event.playerKey);
       if (!previous || Date.parse(event.attemptedAt || 0) > Date.parse(previous.attemptedAt || 0)) {
         invites.set(event.playerKey, event);
@@ -535,6 +538,7 @@
     }
     const index = {
       invites,
+      inviteLists,
       observationLists,
       observations,
       leaderboardEntryLists,
@@ -681,6 +685,17 @@
       launcher: "邀请",
       sidebar: "邀请",
       title: "邀请",
+      currentVersion: "当前版本",
+      latestVersion: "最新版本",
+      updateUnchecked: "尚未检查",
+      updateChecking: "检查中…",
+      updateAvailable: "发现新版本",
+      updateLatest: "已是最新",
+      updateAhead: "当前版本领先于发布版",
+      updateFailed: "检查失败",
+      checkUpdate: "检查更新",
+      retryUpdate: "重试",
+      updateNow: "立即更新",
       subtitle: "招募记录",
       close: "关闭",
       settings: "设置",
@@ -744,6 +759,9 @@
       timeline: "时间线",
       emptyPlayers: "还没有记录。先在排行榜打开一名玩家的详细资料。",
       emptyTimeline: "选择一名玩家查看记录。",
+      loadMoreHistory: "加载更早记录",
+      allHistoryLoaded: "已显示全部记录",
+      historyShown: "已显示",
       viewed: "查看资料",
       inviteAttempt: "提交邀请",
       guildNone: "无公会",
@@ -785,6 +803,17 @@
       language: "切换语言"
     },
     en: {
+      currentVersion: "Current version",
+      latestVersion: "Latest version",
+      updateUnchecked: "Not checked",
+      updateChecking: "Checking…",
+      updateAvailable: "Update available",
+      updateLatest: "Up to date",
+      updateAhead: "Ahead of published version",
+      updateFailed: "Check failed",
+      checkUpdate: "Check updates",
+      retryUpdate: "Retry",
+      updateNow: "Update now",
       launcher: "Recruitment archive",
       sidebar: "Recruiting",
       title: "Recruitment archive",
@@ -846,6 +875,9 @@
       timeline: "Timeline",
       emptyPlayers: "No records yet. Open a player's profile from a leaderboard.",
       emptyTimeline: "Select a player to see the complete timeline.",
+      loadMoreHistory: "Load older records",
+      allHistoryLoaded: "All records loaded",
+      historyShown: "Shown",
       viewed: "Viewed profile",
       inviteAttempt: "Invitation submitted",
       guildNone: "No guild",
@@ -2286,15 +2318,22 @@
     }
 
     async function deletePlayer(namespace, key) {
-      const current = await snapshot(namespace);
-      const next = {
-        players: current.players.filter((player) => player.playerKey !== key),
-        profileObservations: current.profileObservations.filter((event) => event.playerKey !== key),
-        inviteEvents: current.inviteEvents.filter((event) => event.playerKey !== key),
-        leaderboardCaptures: current.leaderboardCaptures,
-        leaderboardEntries: current.leaderboardEntries.filter((entry) => entry.playerKey !== key)
-      };
-      await replaceSnapshot(namespace, next);
+      const db = await database();
+      const tx = db.transaction(["players", "profileObservations", "inviteEvents", "leaderboardEntries"], "readwrite");
+      const done = transactionPromise(tx);
+      try {
+        tx.objectStore("players").delete(`${namespace}::${key}`);
+        for (const name of ["profileObservations", "inviteEvents", "leaderboardEntries"]) {
+          const store = tx.objectStore(name);
+          const keys = await requestPromise(store.index("namespace_player").getAllKeys([namespace, key]));
+          for (const recordKey of keys) store.delete(recordKey);
+        }
+        await done;
+      } catch (error) {
+        tx.abort();
+        await done.catch(() => {});
+        throw error;
+      }
     }
 
     async function clearNamespace(namespace) {
@@ -2995,11 +3034,91 @@
   app.displayPreferences = Object.freeze({ defaults, normalize, createStore });
 })(globalThis);
 
+// ---- src/runtime/release-info.js ----
+(function initReleaseInfo(root) {
+  "use strict";
+
+  const app = (root.MWIGuildInviteTracker = root.MWIGuildInviteTracker || {});
+  const REPOSITORY = "https://github.com/LaYuDr/mwi-guild-invite-tracker";
+  const API_URL = "https://api.github.com/repos/LaYuDr/mwi-guild-invite-tracker/releases/latest";
+  const ASSET_NAME = "mwi-guild-invite-tracker.user.js";
+  const VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+
+  function compareVersions(left, right) {
+    if (!VERSION_PATTERN.test(left) || !VERSION_PATTERN.test(right)) throw new Error("Invalid version");
+    const a = left.split(".").map(BigInt);
+    const b = right.split(".").map(BigInt);
+    for (let index = 0; index < a.length; index += 1) {
+      if (a[index] !== b[index]) return a[index] > b[index] ? 1 : -1;
+    }
+    return 0;
+  }
+
+  function parseRelease(value) {
+    const tag = value?.tag_name;
+    const version = typeof tag === "string" && tag.startsWith("v") ? tag.slice(1) : "";
+    if (value?.draft || value?.prerelease || !VERSION_PATTERN.test(version)) throw new Error("Invalid release");
+    const installUrl = `${REPOSITORY}/releases/download/${tag}/${ASSET_NAME}`;
+    if (!Array.isArray(value.assets) || !value.assets.some((asset) =>
+      asset.name === ASSET_NAME && asset.browser_download_url === installUrl
+    )) throw new Error("Missing install asset");
+    return { version, installUrl };
+  }
+
+  function createChecker(options = {}) {
+    const fetchImpl = options.fetchImpl || root.fetch?.bind(root);
+    const now = options.now || Date.now;
+    const ttl = options.cacheTtlMs ?? 5 * 60 * 1000;
+    const timeoutMs = options.timeoutMs ?? 8000;
+    let cached = null;
+    let pending = null;
+
+    async function request() {
+      if (typeof fetchImpl !== "function") throw new Error("Update check unavailable");
+      const controller = new root.AbortController();
+      let timer;
+      try {
+        const release = await Promise.race([
+          (async () => {
+            const response = await fetchImpl(API_URL, {
+              cache: "no-store", credentials: "omit", referrerPolicy: "no-referrer", signal: controller.signal
+            });
+            if (!response?.ok) throw new Error("Update request failed");
+            return parseRelease(await response.json());
+          })(),
+          new Promise((_, reject) => {
+            timer = root.setTimeout(() => {
+              controller.abort();
+              reject(new Error("Update request timed out"));
+            }, timeoutMs);
+          })
+        ]);
+        cached = { release, at: now() };
+        return release;
+      } finally {
+        root.clearTimeout(timer);
+      }
+    }
+
+    function latest(force = false) {
+      if (pending) return pending;
+      if (!force && cached && now() - cached.at < ttl) return Promise.resolve(cached.release);
+      pending = request().finally(() => { pending = null; });
+      return pending;
+    }
+
+    return { latest };
+  }
+
+  app.releaseInfo = Object.freeze({ API_URL, compareVersions, parseRelease, createChecker });
+})(globalThis);
+
 // ---- src/ui/dom.js ----
 (function initDom(root) {
   "use strict";
 
   const app = (root.MWIGuildInviteTracker = root.MWIGuildInviteTracker || {});
+  const dateFormatters = new Map();
 
   function element(tag, options = {}, children = []) {
     const node = root.document.createElement(tag);
@@ -3023,14 +3142,24 @@
 
   function formatDate(value, language, options = {}) {
     if (!value || !Number.isFinite(Date.parse(value))) return "—";
-    return new Intl.DateTimeFormat(language === "zh" ? "zh-CN" : "en-US", {
+    const locale = language === "zh" ? "zh-CN" : "en-US";
+    const formatOptions = {
       year: "numeric",
       month: "2-digit",
       day: "2-digit",
       hour: "2-digit",
       minute: "2-digit",
       ...options
-    }).format(new Date(value));
+    };
+    const key = JSON.stringify([locale, Object.entries(formatOptions).sort(([a], [b]) => a.localeCompare(b))]);
+    let formatter = dateFormatters.get(key);
+    if (!formatter) {
+      formatter = new Intl.DateTimeFormat(locale, formatOptions);
+      // Bound the cache even if callers introduce many custom formats.
+      if (dateFormatters.size >= 32) dateFormatters.delete(dateFormatters.keys().next().value);
+      dateFormatters.set(key, formatter);
+    }
+    return formatter.format(new Date(value));
   }
 
   function listen(node, type, handler, options) {
@@ -3162,6 +3291,12 @@
     .mwi-git-local { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 5px; }
     .mwi-git-local::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--mwi-git-scan); }
     .mwi-git-identity { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .mwi-git-version-status { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; color: var(--mwi-git-muted); font-size: 12px; line-height: 1.5; font-variant-numeric: tabular-nums; }
+    .mwi-git-version-check { border: 0; padding: 4px; color: var(--mwi-git-muted); background: transparent; font: inherit; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+    .mwi-git-version-check:hover, .mwi-git-update-link:hover { color: var(--mwi-git-text); }
+    .mwi-git-version-check:disabled { opacity: .6; cursor: wait; }
+    .mwi-git-update-link { color: var(--mwi-git-scan); font-weight: 600; padding: 4px; text-decoration: underline; text-underline-offset: 3px; }
+    .mwi-git-version-check:focus-visible, .mwi-git-update-link:focus-visible { outline: 2px solid var(--mwi-git-scan); outline-offset: 2px; }
     .mwi-git-version { flex: 0 0 auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
     .mwi-git-icon-button,
     .mwi-git-button {
@@ -3354,6 +3489,7 @@
     .mwi-git-profile-link:hover { color: var(--mwi-git-scan); text-decoration: underline; text-underline-offset: 2px; }
     .mwi-git-detail-guild, .mwi-git-detail-checked { margin-top: 4px; color: var(--mwi-git-muted); font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
     .mwi-git-timeline { position: relative; margin: 0; padding: 8px 14px 20px 33px; list-style: none; }
+    .mwi-git-timeline-pagination { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 14px 14px; color: var(--mwi-git-muted); font-size: 11px; }
     .mwi-git-timeline::before { content: ""; position: absolute; top: 11px; bottom: 15px; left: 19px; width: 1px; background: linear-gradient(var(--mwi-git-scan), rgba(87,213,202,.10)); }
     .mwi-git-event { position: relative; margin: 0; padding: 8px 0 9px; border-bottom: 1px solid #3f4160; }
     .mwi-git-event::before { content: ""; position: absolute; left: -17px; top: 13px; width: 6px; height: 6px; border: 2px solid var(--mwi-git-space); border-radius: 50%; background: var(--mwi-git-scan); box-shadow: 0 0 0 1px var(--mwi-git-scan); }
@@ -4913,6 +5049,8 @@
 
   const app = (root.MWIGuildInviteTracker = root.MWIGuildInviteTracker || {});
   const core = app.core;
+  const timelineViews = new WeakMap();
+  const TIMELINE_PAGE_SIZE = 100;
   const dom = app.dom;
 
   function latestInviteMap(invites) {
@@ -5077,6 +5215,7 @@
   function renderTimeline(container, player, data, i18n, onDelete, onOpenProfile, existingIndex = null) {
     dom.clear(container);
     if (!player) {
+      timelineViews.delete(container);
       container.append(dom.element("div", { className: "mwi-git-empty", text: i18n.t("emptyTimeline") }));
       return;
     }
@@ -5120,26 +5259,29 @@
     });
     remove.addEventListener("click", onDelete);
     head.append(title, remove);
-    const profileEvents = data.profileObservations
-      .filter((event) => event.playerKey === player.playerKey)
+    const profileEvents = [...(index.observationLists.get(player.playerKey) || [])]
       .sort((a, b) => Date.parse(a.viewedAt || 0) - Date.parse(b.viewedAt || 0));
     const observationsWithEvidence = profileEvents.map((event, index) => ({
       ...event,
-      changeEvidence: index > 0 ? core.profileEvidenceBetween(profileEvents[index - 1], event).evidence : [],
+      previousObservation: index > 0 ? profileEvents[index - 1] : null,
       timelineType: "observation",
       timelineAt: event.viewedAt
     }));
     const events = [
       ...observationsWithEvidence,
-      ...data.inviteEvents
-        .filter((event) => event.playerKey === player.playerKey)
+      ...(index.inviteLists.get(player.playerKey) || [])
         .map((event) => ({ ...event, timelineType: "invite", timelineAt: event.attemptedAt || event.detectedAt })),
-      ...(data.leaderboardEntries || [])
-        .filter((event) => event.playerKey === player.playerKey)
+      ...(index.leaderboardEntryLists.get(player.playerKey) || [])
         .map((event) => ({ ...event, timelineType: "leaderboard", timelineAt: event.capturedAt }))
     ].sort((a, b) => Date.parse(b.timelineAt || 0) - Date.parse(a.timelineAt || 0));
     const list = dom.element("ol", { className: "mwi-git-timeline" });
-    for (const event of events) {
+    const previousView = timelineViews.get(container);
+    const view = previousView?.playerKey === player.playerKey
+      ? previousView
+      : { playerKey: player.playerKey, limit: TIMELINE_PAGE_SIZE };
+    timelineViews.set(container, view);
+    let rendered = 0;
+    function appendEvent(event) {
       const invite = event.timelineType === "invite";
       const leaderboard = event.timelineType === "leaderboard";
       const item = dom.element("li", {
@@ -5151,6 +5293,9 @@
         dom.element("span", { text: invite ? i18n.t("inviteAttempt") : leaderboard ? i18n.t("leaderboardCaptured") : i18n.t("viewed") }),
         dom.element("time", { className: "mwi-git-event-time", text: dom.formatDate(event.timelineAt, i18n.language) })
       );
+      const changeEvidence = event.previousObservation
+        ? core.profileEvidenceBetween(event.previousObservation, event).evidence
+        : [];
       const detail = invite
         ? `${i18n.t("outcome")}：${i18n.t(event.outcome)}`
         : leaderboard
@@ -5160,15 +5305,89 @@
             `${i18n.t("rank")} ${event.rank ?? "—"}`,
             event.value1 ?? "—"
           ].filter((value) => value !== "").join(" · ")
-          : [observationDetail(event, i18n), event.changeEvidence?.length ? i18n.evidence(event.changeEvidence[0]) : ""].filter(Boolean).join(" · ");
+          : [observationDetail(event, i18n), changeEvidence.length ? i18n.evidence(changeEvidence[0]) : ""].filter(Boolean).join(" · ");
       item.append(eventTitle, dom.element("div", { className: "mwi-git-event-detail", text: detail }));
       list.append(item);
     }
     if (!events.length) list.append(dom.element("li", { className: "mwi-git-empty", text: i18n.t("emptyTimeline") }));
     container.append(head, list);
+    const more = dom.element("button", {
+      className: "mwi-git-button", text: i18n.t("loadMoreHistory"), type: "button"
+    });
+    const progress = dom.element("span", { attributes: { role: "status", "aria-live": "polite" } });
+    function appendPage() {
+      const end = Math.min(events.length, view.limit);
+      while (rendered < end) appendEvent(events[rendered++]);
+      more.disabled = rendered >= events.length;
+      more.textContent = i18n.t(more.disabled ? "allHistoryLoaded" : "loadMoreHistory");
+      progress.textContent = `${i18n.t("historyShown")} ${rendered} / ${events.length}`;
+    }
+    more.addEventListener("click", () => {
+      view.limit += TIMELINE_PAGE_SIZE;
+      appendPage();
+    });
+    appendPage();
+    if (events.length > TIMELINE_PAGE_SIZE) {
+      container.append(dom.element("div", { className: "mwi-git-timeline-pagination" }, [more, progress]));
+    }
   }
 
   app.historyView = Object.freeze({ latestInviteMap, latestObservationMap, guildLabel, playStatusLabel, virtualWindow, renderPlayerList, renderTimeline });
+})(globalThis);
+
+// ---- src/ui/version-status.js ----
+(function initVersionStatus(root) {
+  "use strict";
+
+  const app = (root.MWIGuildInviteTracker = root.MWIGuildInviteTracker || {});
+
+  function create(i18n, checkUpdate) {
+    const dom = app.dom;
+    const current = dom.element("span", { className: "mwi-git-version", text: `${i18n.t("currentVersion")} v${app.config.version}` });
+    const status = dom.element("span", { attributes: { role: "status", "aria-live": "polite" } });
+    const retry = dom.element("button", {
+      className: "mwi-git-version-check", text: i18n.t("checkUpdate"), type: "button"
+    });
+    const install = dom.element("a", {
+      className: "mwi-git-update-link", text: i18n.t("updateNow"),
+      attributes: { target: "_blank", rel: "noopener noreferrer", hidden: "" }
+    });
+    const element = dom.element("div", { className: "mwi-git-version-status" }, [current, status, retry, install]);
+    status.textContent = `${i18n.t("latestVersion")}：${i18n.t("updateUnchecked")}`;
+    let pending = null;
+    let destroyed = false;
+
+    function check(force = false) {
+      if (destroyed) return Promise.resolve();
+      if (pending) return pending;
+      retry.disabled = true;
+      install.hidden = true;
+      install.removeAttribute("href");
+      status.textContent = `${i18n.t("latestVersion")}：${i18n.t("updateChecking")}`;
+      pending = Promise.resolve().then(() => checkUpdate(force)).then((release) => {
+        if (destroyed) return;
+        const comparison = app.releaseInfo.compareVersions(app.config.version, release.version);
+        status.textContent = `${i18n.t("latestVersion")} v${release.version} · ${i18n.t(comparison < 0 ? "updateAvailable" : comparison > 0 ? "updateAhead" : "updateLatest")}`;
+        if (comparison < 0) {
+          install.setAttribute("href", release.installUrl);
+          install.hidden = false;
+        }
+        retry.textContent = i18n.t("checkUpdate");
+      }).catch(() => {
+        if (destroyed) return;
+        status.textContent = `${i18n.t("latestVersion")}：${i18n.t("updateFailed")}`;
+        retry.textContent = i18n.t("retryUpdate");
+      }).finally(() => {
+        pending = null;
+        if (!destroyed) retry.disabled = false;
+      });
+      return pending;
+    }
+    retry.addEventListener("click", () => check(true));
+    return { element, check, destroy() { destroyed = true; } };
+  }
+
+  app.versionStatus = Object.freeze({ create });
 })(globalThis);
 
 // ---- src/ui/panel-shell.js ----
@@ -5237,9 +5456,9 @@
     const headerMeta = dom.element("div", { className: "mwi-git-header-meta" });
     const local = dom.element("span", { className: "mwi-git-local", text: i18n.t("localOnly") });
     const identityLabel = dom.element("span", { className: "mwi-git-identity", text: i18n.t("waitIdentity") });
-    const version = dom.element("span", { className: "mwi-git-version", text: `v${app.config.version}` });
+    const versionStatus = app.versionStatus.create(i18n, controller.checkUpdate);
     const summary = dom.element("span", { className: "mwi-git-summary" });
-    headerMeta.append(local, identityLabel, version, summary);
+    headerMeta.append(local, identityLabel, summary);
     titleBlock.append(title, headerMeta);
     const settingsButton = dom.element("button", {
       className: "mwi-git-button mwi-git-settings-button",
@@ -5379,7 +5598,7 @@
     listPane.append(createSectionToggle("players", "players", list), list);
     detailPane.append(createSectionToggle("timeline", "timeline", detailContent), detailContent);
     body.append(listPane, detailPane);
-    shell.append(header, displaySettings, filterSection, body);
+    shell.append(header, versionStatus.element, displaySettings, filterSection, body);
     panel.append(shell);
     backdrop.append(panel);
 
@@ -5499,6 +5718,7 @@
       launcher.setAttribute("aria-expanded", "true");
       render();
       controller.refresh();
+      versionStatus.check();
       settingsButton.focus();
     }
     function hide() {
@@ -5615,6 +5835,7 @@
       renderMetadata();
     }
     function destroy() {
+      versionStatus.destroy();
       launcher.remove();
       backdrop.remove();
       panel.remove();
@@ -5666,6 +5887,7 @@
 
   const repository = app.storage.createRepository();
   const tracker = app.contextTracker.createContextTracker();
+  const updateChecker = app.releaseInfo.createChecker();
   let identity = null;
   let namespace = null;
   let panel = null;
@@ -5675,10 +5897,13 @@
   let observer = null;
   let protocolChain = Promise.resolve();
   const queuedActions = [];
+  const DECORATION_REGIONS = ["leaderboard", "chat", "social", "roster"];
+  const dirtyRegions = new Set();
+  let dataDirty = false;
+  let sentInviteNames = new Set();
   const DECORATION_RELEVANT_SELECTOR = [
     "table",
-    '[class*="ChatMessage_name__"]',
-    '[class*="CharacterName_characterName__"]'
+    '[class*="ChatMessage_name__"]'
   ].join(",");
   const OWN_DECORATION_SELECTOR = ".mwi-git-guild-marker, .mwi-git-invite-age, .mwi-git-panel, .mwi-git-leaderboard-filter-toggle";
   const i18n = app.localization.createI18n();
@@ -5696,39 +5921,61 @@
   }
 
   const decorationScheduler = app.scheduler.frameScheduler(() => {
-    app.leaderboardDecorations.decorate(
-      currentData,
-      i18n,
-      identity,
-      displayPreferences.leaderboard,
-      currentLeaderboard
+    const regions = new Set(dirtyRegions);
+    dirtyRegions.clear();
+    if (regions.has("leaderboard")) app.leaderboardDecorations.decorate(
+      currentData, i18n, identity, displayPreferences.leaderboard, currentLeaderboard
     );
-    app.chatDecorations.decorate(currentData, i18n, identity, displayPreferences.chat, openProfileFromMarker);
-    app.socialDecorations.decorate(currentData, i18n, identity, displayPreferences.social, openProfileFromMarker);
-    app.guildRosterDecorations.decorate(currentData, i18n);
+    if (regions.has("chat")) app.chatDecorations.decorate(currentData, i18n, identity, displayPreferences.chat, openProfileFromMarker);
+    if (regions.has("social")) app.socialDecorations.decorate(currentData, i18n, identity, displayPreferences.social, openProfileFromMarker);
+    if (regions.has("roster")) app.guildRosterDecorations.decorate(currentData, i18n);
   });
+
+  function requestDecorations(regions = DECORATION_REGIONS) {
+    for (const region of regions) dirtyRegions.add(region);
+    if (dirtyRegions.size) decorationScheduler.request();
+  }
 
   function ownDecorationNode(node) {
     const element = node?.nodeType === 1 ? node : node?.parentElement;
     return Boolean(element?.closest?.(OWN_DECORATION_SELECTOR));
   }
 
-  function nodeMayAffectDecorations(node) {
+  function markDecorationNode(node, visitedTables, descendants = false) {
     const element = node?.nodeType === 1 ? node : node?.parentElement;
-    if (!element || ownDecorationNode(element)) return false;
-    return Boolean(
-      element.matches?.(DECORATION_RELEVANT_SELECTOR) ||
-      element.querySelector?.(DECORATION_RELEVANT_SELECTOR) ||
-      element.closest?.(DECORATION_RELEVANT_SELECTOR)
-    );
+    if (!element || ownDecorationNode(element)) return;
+    if (element.closest?.('[class*="ChatMessage_name__"]')) dirtyRegions.add("chat");
+    const table = element.closest?.("table");
+    if (table && !visitedTables.has(table)) {
+      visitedTables.add(table);
+      let recognized = false;
+      for (const [region, matches] of [
+        ["leaderboard", app.leaderboardDecorations.isLeaderboardTable],
+        ["social", app.socialDecorations.isSocialTable],
+        ["roster", app.guildRosterDecorations.isGuildRosterTable]
+      ]) {
+        if (matches(table)) {
+          dirtyRegions.add(region);
+          recognized = true;
+        }
+      }
+      // A partially replaced header can no longer identify the previous table.
+      if (!recognized) for (const region of ["leaderboard", "social", "roster"]) dirtyRegions.add(region);
+    }
+    if (descendants) {
+      for (const child of element.querySelectorAll?.(DECORATION_RELEVANT_SELECTOR) || []) markDecorationNode(child, visitedTables);
+    }
   }
 
-  function mutationsMayAffectDecorations(mutations) {
-    return mutations.some((mutation) => {
+  function scheduleMutations(mutations) {
+    const visitedTables = new Set();
+    for (const mutation of mutations) {
       const changedNodes = [...mutation.addedNodes, ...mutation.removedNodes];
-      if (changedNodes.length && changedNodes.every(ownDecorationNode)) return false;
-      return nodeMayAffectDecorations(mutation.target) || changedNodes.some(nodeMayAffectDecorations);
-    });
+      if (changedNodes.length && changedNodes.every(ownDecorationNode)) continue;
+      markDecorationNode(mutation.target, visitedTables);
+      for (const node of changedNodes) markDecorationNode(node, visitedTables, true);
+    }
+    requestDecorations([]);
   }
 
   async function refresh() {
@@ -5737,18 +5984,18 @@
     } else {
       currentData = await repository.snapshot(namespace);
     }
+    sentInviteNames = new Set((currentData.inviteEvents || [])
+      .filter((event) => event.outcome === "sent").map((event) => event.normalizedName));
+    dataDirty = false;
     panel?.setData(currentData);
-    decorationScheduler.request();
+    requestDecorations();
     return currentData;
   }
 
   async function handleDetectedInvite(action) {
     if (!namespace || !action.character?.name) return;
     const normalized = app.core.normalizeName(action.character.name);
-    const exists = currentData.inviteEvents.some(
-      (event) => event.normalizedName === normalized && event.outcome === "sent"
-    );
-    if (exists) return;
+    if (sentInviteNames.has(normalized)) return;
     const detectedAt = action.detectedAt;
     const player = {
       ...app.core.playerFromInvite(action.character.name, detectedAt),
@@ -5766,12 +6013,18 @@
       correlation: "guild_characters_updated"
     };
     await repository.recordInvite(namespace, player, invite);
+    sentInviteNames.add(normalized);
+    dataDirty = true;
   }
 
   async function processAction(action) {
     if (action.type === "identity") {
+      const nextNamespace = repository.namespaceFor(action.identity);
+      if (namespace !== nextNamespace && dataDirty) await refresh();
+      const changedNamespace = namespace !== nextNamespace;
       identity = action.identity;
-      namespace = repository.namespaceFor(identity);
+      namespace = nextNamespace;
+      if (changedNamespace) await refresh();
       panel?.setIdentity(identity);
       try {
         root.localStorage.setItem(app.config.lastIdentityKey, JSON.stringify(identity));
@@ -5780,7 +6033,7 @@
       }
       const waiting = queuedActions.splice(0);
       for (const queued of waiting) await processAction(queued);
-      await refresh();
+      requestDecorations();
       return;
     }
     if (!namespace) {
@@ -5789,35 +6042,48 @@
     }
     if (action.type === "record_observation") {
       await repository.recordObservation(namespace, action.player, action.observation);
-      await refresh();
+      dataDirty = true;
       return;
     }
     if (action.type === "record_leaderboard") {
       await repository.recordLeaderboard(namespace, action.players, action.capture, action.entries);
-      await refresh();
+      dataDirty = true;
       return;
     }
     if (action.type === "sync_guild_members") {
       const players = action.characters
         .map((character) => app.core.playerFromGuildMember(character, action.identity, action.observedAt))
         .filter((player) => player.currentName);
+      if (!players.length) return;
       await repository.upsertPlayers(namespace, players);
-      await refresh();
+      dataDirty = true;
       return;
     }
     if (action.type === "record_invite") {
       await repository.recordInvite(namespace, action.player, action.invite);
-      await refresh();
+      if (action.invite.outcome === "sent") sentInviteNames.add(action.invite.normalizedName);
+      dataDirty = true;
       return;
     }
     if (action.type === "update_invite") {
       await repository.updateInvite(namespace, action.invite);
-      await refresh();
+      if (action.invite.outcome === "sent") sentInviteNames.add(action.invite.normalizedName);
+      dataDirty = true;
       return;
     }
     if (action.type === "detected_invite") {
       await handleDetectedInvite(action);
-      await refresh();
+    }
+  }
+
+  async function processActions(actions) {
+    try {
+      for (const action of actions) {
+        if (action.type !== "leaderboard") await processAction(action);
+      }
+    } finally {
+      // Publish committed actions even if a later write in this message fails.
+      if (dataDirty) await refresh();
     }
   }
 
@@ -5832,14 +6098,11 @@
       currentLeaderboard = action.leaderboard
         ? { ...action.leaderboard, pending: action.pending === true }
         : null;
-      decorationScheduler.request();
+      requestDecorations(["leaderboard"]);
     }
+    if (!actions.some((action) => action.type !== "leaderboard")) return;
     protocolChain = protocolChain
-      .then(async () => {
-        for (const action of actions) {
-          if (action.type !== "leaderboard") await processAction(action);
-        }
-      })
+      .then(() => processActions(actions))
       .catch((error) => console.error("[MWI Guild Invite Tracker] Failed to process game event", error));
   }
 
@@ -5862,15 +6125,20 @@
     sidebar = app.sidebarIntegration.createController({ panel, i18n });
     sidebar.start();
     if (viewState.open) sidebar.open();
-    decorationScheduler.request();
+    requestDecorations();
     return true;
   }
 
   const controller = {
-    refresh,
+    refresh() {
+      const pending = protocolChain.then(refresh);
+      protocolChain = pending.catch((error) => console.error("[MWI Guild Invite Tracker] Failed to refresh", error));
+      return pending;
+    },
+    checkUpdate: (force) => updateChecker.latest(force),
     setDisplayPreferences(next) {
       displayPreferences = preferenceStore.save(next);
-      decorationScheduler.request();
+      requestDecorations();
       return { ...displayPreferences };
     },
     openProfile(name) {
@@ -5940,11 +6208,9 @@
     panel.setData(currentData);
     sidebar = app.sidebarIntegration.createController({ panel, i18n });
     sidebar.start();
-    observer = new MutationObserver((mutations) => {
-      if (mutationsMayAffectDecorations(mutations)) decorationScheduler.request();
-    });
+    observer = new MutationObserver(scheduleMutations);
     observer.observe(root.document.body, { childList: true, subtree: true });
-    decorationScheduler.request();
+    requestDecorations();
   }
 
   if (root.document.body) mount();
@@ -5952,15 +6218,14 @@
 
   const expiryTimer = root.setInterval(() => {
     const actions = tracker.expire();
+    if (!actions.length) return;
     protocolChain = protocolChain
-      .then(async () => {
-        for (const action of actions) await processAction(action);
-      })
+      .then(() => processActions(actions))
       .catch((error) => console.error("[MWI Guild Invite Tracker] Failed to expire pending events", error));
   }, 1000);
   const languageTimer = root.setInterval(syncGameLanguage, 1000);
-  const relativeTimeTimer = root.setInterval(() => decorationScheduler.request(), 60_000);
-  const resizeHandler = () => decorationScheduler.request();
+  const relativeTimeTimer = root.setInterval(() => requestDecorations(), 60_000);
+  const resizeHandler = () => requestDecorations();
   root.addEventListener("resize", resizeHandler, { passive: true });
   root.visualViewport?.addEventListener?.("resize", resizeHandler, { passive: true });
 
