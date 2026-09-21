@@ -2,7 +2,7 @@
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
 // @namespace    https://github.com/LaYuDr/mwi-guild-invite-tracker
-// @version      0.5.25
+// @version      0.5.26
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
 // @description:en Passively records leaderboard profile views, guild status, and native guild invite outcomes
 // @match        https://www.milkywayidle.com/*
@@ -21,7 +21,7 @@
 
   app.config = Object.freeze({
     appId: "mwi-guild-invite-tracker",
-    version: "0.5.25",
+    version: "0.5.26",
     schemaVersion: 3,
     databaseName: "mwi-guild-invite-tracker",
     databaseVersion: 2,
@@ -708,12 +708,24 @@
         const invite = index.invites.get(player.playerKey);
         if (status && status !== "all" && playerStatus(player, invite) !== status) return false;
         if (guildState && guildState !== "all" && player.latestGuild?.state !== guildState) return false;
-        if (inviteOutcome && inviteOutcome !== "all" && invite?.outcome !== inviteOutcome) return false;
+        if (inviteOutcome === "never_submitted") {
+          if (index.inviteLists.get(player.playerKey)?.length) return false;
+        } else if (inviteOutcome && inviteOutcome !== "all" && invite?.outcome !== inviteOutcome) return false;
         const playerObservations = index.observationLists.get(player.playerKey) || [];
         const latestActivityState = activityStateForObservation(playerObservations[0]);
         if (activityState && activityState !== "all" && latestActivityState !== activityState) return false;
         const assessment = engagementAssessment(player, playerObservations, leaderboardEntries, now, { dataIndex: index });
-        if (engagementState && engagementState !== "all" && assessment.state !== engagementState) return false;
+        if (engagementState === "playing") {
+          const recentlyObserved = playerObservations.some((event) => {
+            const age = now - Date.parse(event.viewedAt);
+            return age >= 0 && age <= app.config.engagementWindowMs && observationIndicatesOnline(event);
+          });
+          const recentlyInferred = assessment.state === "online" && assessment.evidence.some((item) => {
+            const age = now - Date.parse(item.at);
+            return age >= 0 && age <= app.config.engagementWindowMs;
+          });
+          if (!recentlyObserved && !recentlyInferred) return false;
+        } else if (engagementState && engagementState !== "all" && assessment.state !== engagementState) return false;
         if (
           category && category !== "all" &&
           !index.categories.get(player.playerKey)?.has(category)
@@ -957,6 +969,10 @@
       firstObservedMember: "首次观察到入会",
       recruitmentFilters: "招募条件",
       recentCandidates: "筛选近期未邀请候选",
+      invitableCandidates: "筛选可邀请角色",
+      invitableCandidatesHelp: "本地记录：无公会，近 7 天有游玩记录或推测在游玩；排除所有提交邀请记录（含失败和未确认），总等级从高到低。",
+      recentOrInferredPlaying: "近期游玩或推测在游玩",
+      neverSubmitted: "无提交邀请记录",
       resetFilters: "清除筛选",
       growthDays: "经验增长区间",
       growthAny: "不限经验增长",
@@ -1125,6 +1141,10 @@
       firstObservedMember: "First observed membership",
       recruitmentFilters: "Recruitment criteria",
       recentCandidates: "Find recent uninvited candidates",
+      invitableCandidates: "Find invitable players",
+      invitableCandidatesHelp: "Local records: no guild, observed playing in the last 7 days or inferred to be playing; exclude all invitation records (including failed and unconfirmed attempts), highest total level first.",
+      recentOrInferredPlaying: "Recently playing or inferred active",
+      neverSubmitted: "No invitation submitted",
       resetFilters: "Clear filters",
       growthDays: "Experience growth interval",
       growthAny: "Any growth history",
@@ -3809,6 +3829,8 @@
     .mwi-git-filter-field > input, .mwi-git-filter-field > select { width: 100%; box-sizing: border-box; }
     .mwi-git-filter-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; }
     .mwi-git-filter-actions button { min-height: 32px; height: auto; white-space: normal; }
+    .mwi-git-quick-filters { margin: 0; padding: 8px 14px; }
+    .mwi-git-quick-filter-help { padding: 0 14px 8px; }
     .mwi-git-filter-help { color: var(--mwi-git-muted); font-size: 11px; line-height: 1.5; margin: 8px 0 0; }
     .mwi-git-detail-followup { font-size: 12px; line-height: 1.5; margin-top: 6px; overflow-wrap: anywhere; }
     .mwi-git-match-reasons { padding-left: 18px; margin: 4px 0; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; color: var(--mwi-git-muted); }
@@ -6028,12 +6050,13 @@
       activityState.append(dom.element("option", { text: i18n.t(key), attributes: { value } }));
     }
     const engagementState = dom.element("select", { className: "mwi-git-select", attributes: { "aria-label": i18n.t("allEngagementStates") } });
-    for (const [value, key] of [["all", "allEngagementStates"], ["online", "engagementOnline"], ["offline", "engagementOffline"]]) {
+    for (const [value, key] of [["all", "allEngagementStates"], ["playing", "recentOrInferredPlaying"], ["online", "engagementOnline"], ["offline", "engagementOffline"]]) {
       engagementState.append(dom.element("option", { text: i18n.t(key), attributes: { value } }));
     }
     const category = dom.element("select", { className: "mwi-git-select", attributes: { "aria-label": i18n.t("allCategories") } });
     const inviteOutcome = dom.element("select", { className: "mwi-git-select", attributes: { "aria-label": i18n.t("allInviteOutcomes") } });
     inviteOutcome.append(dom.element("option", { text: i18n.t("allInviteOutcomes"), attributes: { value: "all" } }));
+    inviteOutcome.append(dom.element("option", { text: i18n.t("neverSubmitted"), attributes: { value: "never_submitted" } }));
     for (const value of ["pending", "sent", "already_in_guild", "already_invited", "guild_full", "mode_mismatch", "not_found", "blocked", "rate_limited", "timeout", "ambiguous", "unknown_error"]) {
       inviteOutcome.append(dom.element("option", { text: i18n.t(value), attributes: { value } }));
     }
@@ -6100,6 +6123,7 @@
     }
     selection("rankType", "rankType", [["all", i18n.t("allRankTypes")], ...["standard", "steam_standard", "ironcow", "steam_ironcow"].map((value) => [value, i18n.leaderboardType(value)])]);
     const preset = dom.element("button", { className: "mwi-git-button", text: i18n.t("recentCandidates"), type: "button" });
+    const invitable = dom.element("button", { className: "mwi-git-button", text: i18n.t("invitableCandidates"), type: "button", title: i18n.t("invitableCandidatesHelp") });
     const reset = dom.element("button", { className: "mwi-git-button", text: i18n.t("resetFilters"), type: "button" });
     function resetFilters() {
       for (const [key, control] of [["query", search], ["guildState", guildState], ["activityState", activityState], ["engagementState", engagementState], ["category", category], ["inviteOutcome", inviteOutcome], ["days", days], ...controls]) {
@@ -6124,8 +6148,20 @@
       renderAfterFilterChange();
     });
     reset.addEventListener("click", () => { resetFilters(); renderAfterFilterChange(); });
+    invitable.addEventListener("click", () => {
+      resetFilters();
+      settings.guildState = guildState.value = "none";
+      settings.engagementState = engagementState.value = "playing";
+      settings.inviteOutcome = inviteOutcome.value = "never_submitted";
+      settings.sort = sort.value = "totalLevel";
+      settings.direction = "desc";
+      selectedKey = null;
+      playersDirty = true;
+      if (collapsed.players) playersToggle.click();
+      renderAfterFilterChange();
+    });
     const filterActions = dom.element("div", { className: "mwi-git-filter-actions" });
-    filterActions.append(preset, reset);
+    filterActions.append(preset);
     recruitment.append(filterActions, recruitmentControls, dom.element("p", { className: "mwi-git-filter-help", text: i18n.t("filterHelp") }));
     toolbar.append(recruitment);
 
@@ -6179,10 +6215,18 @@
       return toggle;
     }
 
-    filterSection.append(createSectionToggle("filters", "filtersSection", toolbar), toolbar);
+    const quickFilters = dom.element("div", { className: "mwi-git-filter-actions mwi-git-quick-filters" });
+    quickFilters.append(invitable, reset);
+    const quickFilterHelp = dom.element("p", { className: "mwi-git-filter-help mwi-git-quick-filter-help", text: i18n.t("invitableCandidatesHelp"), attributes: { role: "status" } });
+    function updateQuickFilterState() {
+      quickFilterHelp.hidden = !(settings.guildState === "none" && settings.engagementState === "playing" && settings.inviteOutcome === "never_submitted" && settings.sort === "totalLevel" && settings.direction === "desc");
+    }
+    updateQuickFilterState();
+    filterSection.append(quickFilters, quickFilterHelp, createSectionToggle("filters", "filtersSection", toolbar), toolbar);
     actionSection.append(createSectionToggle("actions", "dataSection", actions), actions);
     displaySettings.append(actionSection);
-    listPane.append(createSectionToggle("players", "players", list), list);
+    const playersToggle = createSectionToggle("players", "players", list);
+    listPane.append(playersToggle, list);
     detailPane.append(createSectionToggle("timeline", "timeline", detailContent), detailContent);
     body.append(listPane, detailPane);
     shell.append(header, versionStatus.element, displaySettings, filterSection, body);
@@ -6323,6 +6367,7 @@
     backdrop.addEventListener("click", (event) => { if (event.target === backdrop) requestHide(); });
     backdrop.addEventListener("keydown", (event) => { if (event.key === "Escape") requestHide(); });
     function renderAfterFilterChange() {
+      updateQuickFilterState();
       playersDirty = true;
       renderPlayers({ refilter: true, resetScroll: true });
       renderTimeline();
