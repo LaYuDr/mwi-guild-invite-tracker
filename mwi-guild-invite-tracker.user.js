@@ -2,7 +2,7 @@
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
 // @namespace    https://github.com/LaYuDr/mwi-guild-invite-tracker
-// @version      0.5.24
+// @version      0.5.25
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
 // @description:en Passively records leaderboard profile views, guild status, and native guild invite outcomes
 // @match        https://www.milkywayidle.com/*
@@ -21,7 +21,7 @@
 
   app.config = Object.freeze({
     appId: "mwi-guild-invite-tracker",
-    version: "0.5.24",
+    version: "0.5.25",
     schemaVersion: 3,
     databaseName: "mwi-guild-invite-tracker",
     databaseVersion: 2,
@@ -358,7 +358,11 @@
   function latestInviteForPlayer(events, key) {
     return (events || [])
       .filter((event) => event.playerKey === key)
-      .sort((a, b) => Date.parse(b.attemptedAt) - Date.parse(a.attemptedAt))[0] || null;
+      .sort((a, b) => inviteTime(b) - inviteTime(a))[0] || null;
+  }
+
+  function inviteTime(event) {
+    return Date.parse(event?.attemptedAt || event?.detectedAt || event?.confirmedAt || "") || 0;
   }
 
   function canonicalList(value) {
@@ -480,7 +484,7 @@
       if (!inviteLists.has(event.playerKey)) inviteLists.set(event.playerKey, []);
       inviteLists.get(event.playerKey).push(event);
       const previous = invites.get(event.playerKey);
-      if (!previous || Date.parse(event.attemptedAt || 0) > Date.parse(previous.attemptedAt || 0)) {
+      if (!previous || inviteTime(event) > inviteTime(previous)) {
         invites.set(event.playerKey, event);
       }
     }
@@ -548,6 +552,7 @@
       totalLevels,
       engagementBases
     };
+    index.recruitment = new Map((source.players || []).map((player) => [player.playerKey, recruitmentEvidence(player, index)]));
     dataIndexCache.set(source, index);
     return index;
   }
@@ -572,6 +577,110 @@
     if (invite && ["pending", "sent"].includes(invite.outcome)) return "invited";
     if (player.latestGuild && player.latestGuild.state === "none") return "no_guild";
     return "unknown";
+  }
+
+  function inviteFollowup(player, observations, invite) {
+    if (!invite) return { state: "never_invited", at: null };
+    if (invite.outcome !== "sent") return { state: "not_sent", at: null };
+    const start = inviteTime(invite);
+    const snapshots = [...(observations || []).map((event) => event.guildSnapshot), player.latestGuild]
+      .filter((snapshot) => snapshot && Date.parse(snapshot.observedAt || "") > start && ["joined", "none"].includes(snapshot.state))
+      .sort((a, b) => Date.parse(b.observedAt) - Date.parse(a.observedAt));
+    if (!snapshots.length) return { state: "not_reviewed", at: null };
+    const latest = snapshots[0];
+    if (latest.state === "none") return { state: "still_none", at: latest.observedAt };
+    const recruiter = invite.recruiter || {};
+    const ownGuild = (snapshot) => snapshot.guildId != null && recruiter.guildId != null
+      ? Number(snapshot.guildId) === Number(recruiter.guildId)
+      : Boolean(snapshot.guildName && recruiter.guildName && normalizeName(snapshot.guildName) === normalizeName(recruiter.guildName));
+    if (ownGuild(latest)) {
+      const first = snapshots.filter(ownGuild).at(-1);
+      return { state: "joined_own", at: latest.observedAt, firstObservedAt: first.observedAt, guildName: latest.guildName };
+    }
+    const comparable = latest.guildId != null && recruiter.guildId != null || Boolean(latest.guildName && recruiter.guildName);
+    return { state: comparable ? "joined_other" : "joined_unknown", at: latest.observedAt, guildName: latest.guildName };
+  }
+
+  function recruitmentEvidence(player, index) {
+    const observations = index.observationLists.get(player.playerKey) || [];
+    const entries = index.leaderboardEntryLists.get(player.playerKey) || [];
+    const skills = new Map();
+    // Observation lists are already newest first; missing values stay missing.
+    for (const observation of observations) {
+      for (const skill of observation.progressSnapshot?.skills || []) {
+        const key = skill.skillHrid?.split("/").pop();
+        if (key && !skills.has(key) && nullableNumber(skill.level) !== null) {
+          skills.set(key, { level: Number(skill.level), at: observation.viewedAt });
+        }
+      }
+    }
+    const ranks = new Map();
+    const addRank = (record, at) => {
+      const key = leaderboardSeriesKey(record);
+      if (nullableNumber(record.rank) === null) return;
+      if (!ranks.has(key) || Date.parse(at) > Date.parse(ranks.get(key).at)) {
+        ranks.set(key, { category: record.categoryHrid, type: record.typeHrid, filterKey: record.filterKey, rank: Number(record.rank), at });
+      }
+    };
+    for (const observation of observations) if (observation.leaderboard) addRank(observation.leaderboard, observation.viewedAt);
+    for (const entry of entries) addRank(entry, entry.capturedAt);
+    const growth = [];
+    const series = new Map();
+    for (const entry of [...entries].sort((a, b) => Date.parse(a.capturedAt) - Date.parse(b.capturedAt))) {
+      if (leaderboardExperienceValue(entry) === null) continue;
+      const key = leaderboardSeriesKey(entry);
+      const before = series.get(key);
+      if (before && entry.experienceValue > before.experienceValue) {
+        growth.push({ from: before.capturedAt, at: entry.capturedAt, category: entry.categoryHrid, delta: entry.experienceValue - before.experienceValue });
+      }
+      series.set(key, entry);
+    }
+    return { skills, ranks: [...ranks.values()], growth, followup: inviteFollowup(player, observations, index.invites.get(player.playerKey)) };
+  }
+
+  function recruitmentMatch(player, options, index, now = Date.now()) {
+    const evidence = index.recruitment?.get(player.playerKey) || recruitmentEvidence(player, index);
+    const reasons = [];
+    for (const key of ["minSkillLevel", "maxRank"]) {
+      if (key === "minSkillLevel" && (!options?.skill || options.skill === "all")) continue;
+      const value = options?.[key];
+      if (value !== undefined && value !== "" && (!Number.isInteger(Number(value)) || Number(value) < 1)) return { matches: false, reasons };
+    }
+    const day = 24 * 60 * 60 * 1000;
+    const growthDays = Number(options?.growthDays) || 0;
+    const guildDays = Number(options?.guildDays) || 0;
+    if (growthDays) {
+      const growth = evidence.growth.filter((item) => Date.parse(item.from) >= now - growthDays * day && Date.parse(item.at) <= now).at(-1);
+      if (!growth) return { matches: false, reasons };
+      reasons.push({ kind: "growth", ...growth });
+    }
+    if (guildDays) {
+      const at = Date.parse(player.latestGuild?.observedAt || "");
+      if (!(at >= now - guildDays * day && at <= now)) return { matches: false, reasons };
+      reasons.push({ kind: "guild", at: player.latestGuild.observedAt });
+    }
+    const followup = options?.followup;
+    if (followup && followup !== "all") {
+      if (evidence.followup.state !== followup) return { matches: false, reasons };
+      reasons.push({ kind: "followup", state: followup });
+    }
+    const skill = options?.skill;
+    if (skill && skill !== "all") {
+      const recorded = evidence.skills.get(skill);
+      const minimum = Number(options.minSkillLevel) || 0;
+      if (!recorded || recorded.level < minimum) return { matches: false, reasons };
+      reasons.push({ kind: "skill", category: skill, ...recorded });
+    }
+    const maximum = Number(options?.maxRank) || 0;
+    if (maximum) {
+      const rank = evidence.ranks.filter((item) => (
+        (!options.category || options.category === "all" || item.category === options.category) &&
+        (!options.rankType || options.rankType === "all" || item.type === options.rankType) && item.rank <= maximum
+      )).sort((a, b) => a.rank - b.rank)[0];
+      if (!rank) return { matches: false, reasons };
+      reasons.push({ kind: "rank", ...rank });
+    }
+    return { matches: true, reasons };
   }
 
   function filterPlayers(players, options, invites, observations, leaderboardEntries, existingIndex = null, now = Date.now()) {
@@ -613,6 +722,7 @@
           const latestActivity = Math.max(Date.parse(player.lastViewedAt || 0) || 0, Date.parse(player.lastInvitedAt || 0) || 0);
           if (latestActivity < cutoff) return false;
         }
+        if (!recruitmentMatch(player, options, index, now).matches) return false;
         return true;
       })
       .sort((a, b) => {
@@ -663,6 +773,10 @@
     outcomeFromErrorKey,
     isIsoDate,
     latestInviteForPlayer,
+    inviteTime,
+    inviteFollowup,
+    recruitmentEvidence,
+    recruitmentMatch,
     profileEvidenceBetween,
     leaderboardEvidenceBetween,
     leaderboardExperienceValue,
@@ -673,6 +787,123 @@
     filterPlayers,
     structuredCloneSafe
   });
+})(globalThis);
+
+// ---- src/runtime/data-quality.js ----
+(function initDataQuality(root) {
+  "use strict";
+
+  const app = (root.MWIGuildInviteTracker = root.MWIGuildInviteTracker || {});
+  const core = app.core;
+  const stores = ["players", "profileObservations", "inviteEvents", "leaderboardCaptures", "leaderboardEntries"];
+
+  function canonical(value) {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (!value || typeof value !== "object") return value;
+    return Object.fromEntries(Object.keys(value).sort().filter((key) => value[key] !== undefined)
+      .map((key) => [key, canonical(value[key])]));
+  }
+
+  function signature(record) {
+    const { id: _id, pk: _pk, namespace: _namespace, ...content } = record;
+    return JSON.stringify(canonical(content));
+  }
+
+  function inviteSignature(record) {
+    // Preserve distinct attempts, sources and recruiter identities. Mutable result
+    // fields may differ between two observations of the same original attempt.
+    const { outcome: _outcome, confirmedAt: _confirmed, errorKey: _error, correlation: _correlation,
+      linkedObservationId: _observation, ...attempt } = record;
+    return signature(attempt);
+  }
+
+  function mergeInvite(existing, incoming) {
+    if (inviteSignature(existing) !== inviteSignature(incoming)) return { record: existing, conflict: true };
+    const uncertain = new Set(["pending", "timeout", "ambiguous", "unknown_error"]);
+    if (existing.outcome !== incoming.outcome && !uncertain.has(existing.outcome) && !uncertain.has(incoming.outcome)) {
+      return { record: existing, conflict: true };
+    }
+    const weight = (event) => event.outcome === "pending" ? 0 : uncertain.has(event.outcome) ? 1 : 2;
+    const useIncoming = weight(incoming) > weight(existing) || (
+      weight(incoming) === weight(existing) &&
+      Date.parse(incoming.confirmedAt || incoming.detectedAt || 0) > Date.parse(existing.confirmedAt || existing.detectedAt || 0)
+    );
+    const chosen = useIncoming ? incoming : existing;
+    return { record: { ...chosen, id: existing.id, linkedObservationId: chosen.linkedObservationId || existing.linkedObservationId || incoming.linkedObservationId || null }, conflict: false };
+  }
+
+  function identityMatches(players, incoming) {
+    const id = core.nullableNumber(incoming.characterId);
+    const name = incoming.normalizedName || core.normalizeName(incoming.currentName);
+    const sameName = players.filter((p) => p.normalizedName === name);
+    const identified = sameName.filter((p) => p.characterId != null);
+    if (id !== null) {
+      const sameId = players.filter((p) => Number(p.characterId) === id && p.characterId != null);
+      const conflict = identified.some((p) => Number(p.characterId) !== id);
+      // A current ID-bearing observation can resolve temporary records, but
+      // never overwrite a different known ID with the same name.
+      return [...sameId, ...(!conflict ? sameName.filter((p) => p.characterId == null) : [])];
+    }
+    const ids = new Set(identified.map((p) => Number(p.characterId)));
+    if (ids.size === 1) return identified;
+    return sameName.filter((p) => p.characterId == null);
+  }
+
+  function mergeIdentity(players, incoming) {
+    const matches = identityMatches(players, incoming);
+    let player = null;
+    for (const match of matches) player = core.mergePlayer(player, match);
+    player = core.mergePlayer(player, incoming);
+    return { player, oldKeys: matches.map((p) => p.playerKey).filter((key) => key !== player.playerKey) };
+  }
+
+  function nameConflicts(players) {
+    const names = new Map();
+    for (const player of players) {
+      if (!names.has(player.normalizedName)) names.set(player.normalizedName, []);
+      names.get(player.normalizedName).push(player);
+    }
+    return [...names.values()].filter((rows) => rows.length > 1)
+      .map((rows) => ({ name: rows[0].currentName, playerKeys: rows.map((p) => p.playerKey) }));
+  }
+
+  function compactSnapshot(source) {
+    const data = Object.fromEntries(stores.map((name) => [name, core.structuredCloneSafe(source[name] || [])]));
+    const aliases = new Map();
+    const observations = new Map();
+    const invites = new Map();
+    const report = { removedObservations: 0, removedInvites: 0, updatedInvites: 0, eventConflicts: 0, identityConflicts: nameConflicts(data.players) };
+    for (const observation of data.profileObservations) {
+      const key = signature(observation);
+      if (observations.has(key)) {
+        aliases.set(observation.id, observations.get(key).id);
+        report.removedObservations += 1;
+      } else observations.set(key, observation);
+    }
+    data.profileObservations = [...observations.values()];
+    for (const invite of data.inviteEvents) {
+      if (aliases.has(invite.linkedObservationId)) invite.linkedObservationId = aliases.get(invite.linkedObservationId);
+      const key = inviteSignature(invite);
+      const previous = invites.get(key);
+      if (!previous) {
+        invites.set(key, invite);
+        continue;
+      }
+      const merged = mergeInvite(previous, invite);
+      if (merged.conflict) {
+        invites.set(`${key}|conflict:${invite.id}`, invite);
+        report.eventConflicts += 1;
+      } else {
+        invites.set(key, merged.record);
+        report.removedInvites += 1;
+        if (signature(previous) !== signature(merged.record)) report.updatedInvites += 1;
+      }
+    }
+    data.inviteEvents = [...invites.values()];
+    return { data, report };
+  }
+
+  app.dataQuality = Object.freeze({ stores, canonical, signature, inviteSignature, mergeInvite, identityMatches, mergeIdentity, nameConflicts, compactSnapshot });
 })(globalThis);
 
 // ---- src/localization.js ----
@@ -714,6 +945,53 @@
       allEngagementStates: "全部游玩判断",
       allCategories: "全部排行榜",
       allInviteOutcomes: "全部邀请结果",
+      allFollowups: "全部邀请后续",
+      followup_never_invited: "没有邀请记录",
+      followup_not_sent: "最近邀请未确认发送",
+      followup_not_reviewed: "已发送 · 尚未复查",
+      followup_still_none: "已发送 · 复查时无公会",
+      followup_joined_own: "后续已观察到加入招募公会",
+      followup_joined_other: "后续已观察到加入其他公会",
+      followup_joined_unknown: "后续已观察到有公会",
+      followupLabel: "邀请后续",
+      firstObservedMember: "首次观察到入会",
+      recruitmentFilters: "招募条件",
+      recentCandidates: "筛选近期未邀请候选",
+      resetFilters: "清除筛选",
+      growthDays: "经验增长区间",
+      growthAny: "不限经验增长",
+      growth7: "近 7 天内两次采样有增长",
+      growth30: "近 30 天内两次采样有增长",
+      guildDays: "公会确认时间",
+      guildAny: "不限公会确认时间",
+      guild7: "近 7 天确认过公会状态",
+      guild30: "近 30 天确认过公会状态",
+      skill: "技能",
+      allSkills: "不限技能",
+      minSkillLevel: "技能最低等级",
+      positiveInteger: "请输入大于 0 的整数，或留空取消限制。",
+      maxRank: "最近记录排名不超过",
+      rankType: "排名所属榜单",
+      allRankTypes: "任意榜单类型",
+      matchReasons: "匹配依据",
+      growthRecorded: "经验增加",
+      filterHelp: "增长条件要求两次采样都在所选区间内。等级、排名和公会状态均来自已有记录；不会自动查询。排名采用各榜单序列最近记录。",
+      clearFilterHint: "没有匹配结果，可清除或放宽筛选条件。",
+      maintenance: "检查与整理数据",
+      maintenanceTitle: "整理当前角色的记录",
+      maintenanceHelp: "只合并重复事件，保留时间不同的真实操作。身份或结果冲突不会自动处理。操作前会下载完整备份，请保留下载文件以便恢复。",
+      maintenanceConfirm: "备份并整理记录",
+      maintenanceClean: "没有可合并的重复记录。",
+      maintenanceSuccess: "记录已整理，整理前备份已发起下载。",
+      maintenanceChanged: "数据或当前角色已变化，未执行整理。请关闭后重新检查。",
+      maintenanceFailed: "整理未完成，请重试；保留已下载的备份。",
+      maintenanceBusy: "正在备份并整理当前角色的记录…",
+      duplicateObservations: "可合并的资料副本",
+      duplicateInvites: "可合并的邀请副本",
+      updatedInvites: "可补齐的邀请结果",
+      identityConflicts: "待核实的同名档案",
+      eventConflicts: "保留待核实的结果冲突",
+      importConflictHelp: "同 ID 的矛盾内容保留本地版本；不同 ID 的矛盾结果保留两条。",
       allTime: "全部时间",
       last7Days: "最近 7 天",
       last30Days: "最近 30 天",
@@ -835,6 +1113,53 @@
       allEngagementStates: "All play assessments",
       allCategories: "All leaderboards",
       allInviteOutcomes: "All invite outcomes",
+      allFollowups: "All invitation follow-ups",
+      followup_never_invited: "No invitation recorded",
+      followup_not_sent: "Latest invitation not confirmed sent",
+      followup_not_reviewed: "Sent · Not checked again",
+      followup_still_none: "Sent · No guild when rechecked",
+      followup_joined_own: "Later observed in recruiting guild",
+      followup_joined_other: "Later observed in another guild",
+      followup_joined_unknown: "Later observed with a guild",
+      followupLabel: "Invitation follow-up",
+      firstObservedMember: "First observed membership",
+      recruitmentFilters: "Recruitment criteria",
+      recentCandidates: "Find recent uninvited candidates",
+      resetFilters: "Clear filters",
+      growthDays: "Experience growth interval",
+      growthAny: "Any growth history",
+      growth7: "Growth between samples within 7 days",
+      growth30: "Growth between samples within 30 days",
+      guildDays: "Guild observation date",
+      guildAny: "Any guild observation date",
+      guild7: "Guild checked within 7 days",
+      guild30: "Guild checked within 30 days",
+      skill: "Skill",
+      allSkills: "Any skill",
+      minSkillLevel: "Minimum skill level",
+      positiveInteger: "Enter a positive whole number, or leave blank for no limit.",
+      maxRank: "Latest recorded rank at most",
+      rankType: "Ranking leaderboard type",
+      allRankTypes: "Any leaderboard type",
+      matchReasons: "Matching evidence",
+      growthRecorded: "Experience increased",
+      filterHelp: "Both growth samples must fall within the selected interval. Levels, ranks and guild status use existing records; no profiles are requested automatically. Rank uses the latest record in each leaderboard series.",
+      clearFilterHint: "No matches. Clear or relax your filters.",
+      maintenance: "Check and tidy data",
+      maintenanceTitle: "Tidy this character’s records",
+      maintenanceHelp: "Only duplicate events are combined; actions at different times are kept. Identity and outcome conflicts are left for review. A full backup download starts before changes; keep the downloaded file for recovery.",
+      maintenanceConfirm: "Back up and tidy records",
+      maintenanceClean: "No duplicate records to combine.",
+      maintenanceSuccess: "Records tidied. The backup download was started before changes.",
+      maintenanceChanged: "The data or current character changed. Nothing was tidied. Close and check again.",
+      maintenanceFailed: "Could not finish tidying. Retry and keep any downloaded backup.",
+      maintenanceBusy: "Backing up and tidying this character’s records…",
+      duplicateObservations: "Duplicate profile records to combine",
+      duplicateInvites: "Duplicate invitations to combine",
+      updatedInvites: "Invitation results to complete",
+      identityConflicts: "Same-name identities needing review",
+      eventConflicts: "Outcome conflicts kept for review",
+      importConflictHelp: "Conflicting content with the same ID keeps the local version; conflicting outcomes with different IDs keep both records.",
       allTime: "All time",
       last7Days: "Last 7 days",
       last30Days: "Last 30 days",
@@ -2125,10 +2450,6 @@
       return databasePromise;
     }
 
-    async function getByIndex(store, index, key) {
-      return requestPromise(store.index(index).get(key));
-    }
-
     async function rewritePlayerKey(transaction, namespace, oldKey, newKey) {
       if (!oldKey || oldKey === newKey) return;
       for (const storeName of ["profileObservations", "inviteEvents", "leaderboardEntries"]) {
@@ -2143,14 +2464,22 @@
 
     async function findPlayer(transaction, namespace, player) {
       const store = transaction.objectStore("players");
+      const candidates = new Map();
       if (player.characterId != null) {
-        const byId = await getByIndex(store, "namespace_character", [namespace, Number(player.characterId)]);
-        if (byId) return byId;
+        const records = await requestPromise(store.index("namespace_character").getAll([namespace, Number(player.characterId)]));
+        for (const record of records) candidates.set(record.playerKey, publicRecord(record));
       }
       if (player.normalizedName) {
-        return getByIndex(store, "namespace_name", [namespace, player.normalizedName]);
+        const records = await requestPromise(store.index("namespace_name").getAll([namespace, player.normalizedName]));
+        for (const record of records) candidates.set(record.playerKey, publicRecord(record));
       }
-      return null;
+      if (!candidates.size) return null;
+      const resolved = app.dataQuality.mergeIdentity([...candidates.values()], player);
+      for (const key of resolved.oldKeys) {
+        await rewritePlayerKey(transaction, namespace, key, resolved.player.playerKey);
+        store.delete(`${namespace}::${key}`);
+      }
+      return dbRecord(namespace, "players", resolved.player);
     }
 
     async function recordObservation(namespace, player, observation) {
@@ -2165,8 +2494,13 @@
           tx.objectStore("players").delete(existing.pk);
         }
         observation.playerKey = merged.playerKey;
+        const observationStore = tx.objectStore("profileObservations");
+        const existingObservations = await requestPromise(observationStore.index("namespace_player").getAll([namespace, merged.playerKey]));
+        const key = app.dataQuality.signature(observation);
+        const duplicate = existingObservations.find((event) => app.dataQuality.signature(event) === key);
+        if (duplicate) observation.id = duplicate.id;
         tx.objectStore("players").put(dbRecord(namespace, "players", merged));
-        tx.objectStore("profileObservations").put(dbRecord(namespace, "profileObservations", observation));
+        observationStore.put(dbRecord(namespace, "profileObservations", observation));
         await done;
         return { player: merged, observation };
       } catch (error) {
@@ -2220,17 +2554,25 @@
 
     async function recordInvite(namespace, player, invite) {
       const db = await database();
-      const tx = db.transaction(["players", "inviteEvents"], "readwrite");
+      const tx = db.transaction(["players", "profileObservations", "inviteEvents", "leaderboardEntries"], "readwrite");
       const done = transactionPromise(tx);
       try {
         const existing = await findPlayer(tx, namespace, player);
         const merged = core.mergePlayer(existing && publicRecord(existing), player);
         invite.playerKey = merged.playerKey;
+        const inviteStore = tx.objectStore("inviteEvents");
+        const existingInvites = await requestPromise(inviteStore.index("namespace_player").getAll([namespace, merged.playerKey]));
+        const key = app.dataQuality.inviteSignature(invite);
+        const duplicate = existingInvites.find((event) => app.dataQuality.inviteSignature(event) === key);
+        if (duplicate) {
+          const result = app.dataQuality.mergeInvite(publicRecord(duplicate), invite);
+          if (!result.conflict) Object.assign(invite, result.record);
+        }
         merged.lastInvitedAt = core.laterIso
           ? core.laterIso(merged.lastInvitedAt, invite.attemptedAt)
           : invite.attemptedAt;
         tx.objectStore("players").put(dbRecord(namespace, "players", merged));
-        tx.objectStore("inviteEvents").put(dbRecord(namespace, "inviteEvents", invite));
+        inviteStore.put(dbRecord(namespace, "inviteEvents", invite));
         await done;
         return { player: merged, invite };
       } catch (error) {
@@ -2271,11 +2613,19 @@
       const tx = db.transaction("inviteEvents", "readwrite");
       const done = transactionPromise(tx);
       const store = tx.objectStore("inviteEvents");
-      const existing = await requestPromise(store.get(`${namespace}::${invite.id}`));
-      const next = {
+      let existing = await requestPromise(store.get(`${namespace}::${invite.id}`));
+      if (!existing) {
+        const records = await requestPromise(store.index("namespace").getAll(namespace));
+        existing = records.find((record) => {
+          if (invite.playerKey !== record.playerKey && !invite.playerKey.startsWith("name:")) return false;
+          return app.dataQuality.inviteSignature(record) === app.dataQuality.inviteSignature({ ...invite, playerKey: record.playerKey });
+        });
+      }
+      const incoming = {
         ...invite,
         playerKey: existing?.playerKey || invite.playerKey
       };
+      const next = existing ? app.dataQuality.mergeInvite(publicRecord(existing), incoming).record : incoming;
       store.put(dbRecord(namespace, "inviteEvents", next));
       await done;
       return next;
@@ -2298,11 +2648,17 @@
       for (const key of keys) store.delete(key);
     }
 
-    async function replaceSnapshot(namespace, data) {
+    async function replaceSnapshot(namespace, data, expected = null) {
       const db = await database();
       const tx = db.transaction(["players", "profileObservations", "inviteEvents", "leaderboardCaptures", "leaderboardEntries"], "readwrite");
       const done = transactionPromise(tx);
       try {
+        if (expected) {
+          for (const name of app.dataQuality.stores) {
+            const records = await requestPromise(tx.objectStore(name).index("namespace").getAll(namespace));
+            if (JSON.stringify(records.map(publicRecord)) !== JSON.stringify(expected[name] || [])) throw new Error("maintenance_changed");
+          }
+        }
         for (const name of ["players", "profileObservations", "inviteEvents", "leaderboardCaptures", "leaderboardEntries"]) {
           await clearStoreNamespace(tx.objectStore(name), namespace);
           for (const record of data[name] || []) {
@@ -2373,7 +2729,8 @@
     async function snapshot(namespace) {
       return core.structuredCloneSafe(get(namespace));
     }
-    async function replaceSnapshot(namespace, data) {
+    async function replaceSnapshot(namespace, data, expected = null) {
+      if (expected && JSON.stringify(get(namespace)) !== JSON.stringify(expected)) throw new Error("maintenance_changed");
       spaces.set(namespace, core.structuredCloneSafe({
         players: data.players || [],
         profileObservations: data.profileObservations || [],
@@ -2382,24 +2739,26 @@
         leaderboardEntries: data.leaderboardEntries || []
       }));
     }
+    function savePlayer(data, incoming) {
+      const resolved = app.dataQuality.mergeIdentity(data.players, incoming);
+      const oldKeys = new Set(resolved.oldKeys);
+      for (const name of ["profileObservations", "inviteEvents", "leaderboardEntries"]) {
+        for (const event of data[name]) if (oldKeys.has(event.playerKey)) event.playerKey = resolved.player.playerKey;
+      }
+      data.players = data.players.filter((player) => !oldKeys.has(player.playerKey));
+      const index = data.players.findIndex((player) => player.playerKey === resolved.player.playerKey);
+      if (index >= 0) data.players[index] = resolved.player;
+      else data.players.push(resolved.player);
+      return resolved.player;
+    }
     async function recordObservation(namespace, player, observation) {
       const data = get(namespace);
-      const index = data.players.findIndex(
-        (item) =>
-          (player.characterId != null && item.characterId === player.characterId) ||
-          item.normalizedName === player.normalizedName
-      );
-      const existing = index >= 0 ? data.players[index] : null;
-      const merged = core.mergePlayer(existing, player);
-      if (existing && existing.playerKey !== merged.playerKey) {
-        for (const event of [...data.profileObservations, ...data.inviteEvents, ...data.leaderboardEntries]) {
-          if (event.playerKey === existing.playerKey) event.playerKey = merged.playerKey;
-        }
-      }
-      if (index >= 0) data.players[index] = merged;
-      else data.players.push(merged);
+      const merged = savePlayer(data, player);
       observation.playerKey = merged.playerKey;
-      data.profileObservations.push(core.structuredCloneSafe(observation));
+      const key = app.dataQuality.signature(observation);
+      const duplicate = data.profileObservations.find((event) => app.dataQuality.signature(event) === key);
+      if (duplicate) observation.id = duplicate.id;
+      else data.profileObservations.push(core.structuredCloneSafe(observation));
       return { player: merged, observation };
     }
     async function recordLeaderboard(namespace, players, capture, entries) {
@@ -2408,16 +2767,7 @@
       const eligibleEntries = [];
       for (let offset = 0; offset < (players || []).length; offset += 1) {
         const player = players[offset];
-        const index = data.players.findIndex(
-          (item) => (player.characterId != null && item.characterId === player.characterId) || item.normalizedName === player.normalizedName
-        );
-        const existing = index >= 0 ? data.players[index] : null;
-        const merged = core.mergePlayer(existing, player);
-        if (existing && existing.playerKey !== merged.playerKey) {
-          for (const event of [...data.profileObservations, ...data.inviteEvents, ...data.leaderboardEntries]) {
-            if (event.playerKey === existing.playerKey) event.playerKey = merged.playerKey;
-          }
-        }
+        const merged = savePlayer(data, player);
         if (entries[offset]) {
           entries[offset].playerKey = merged.playerKey;
           if (isEligibleLeaderboardEntry(merged, entries[offset])) {
@@ -2427,8 +2777,6 @@
             });
           }
         }
-        if (index >= 0) data.players[index] = merged;
-        else data.players.push(merged);
         mergedPlayers.push(core.structuredCloneSafe(merged));
       }
       const storedCapture = { ...capture, eligibleRowCount: eligibleEntries.length };
@@ -2438,12 +2786,16 @@
     }
     async function recordInvite(namespace, player, invite) {
       const data = get(namespace);
-      const index = data.players.findIndex((item) => item.normalizedName === player.normalizedName);
-      const merged = core.mergePlayer(index >= 0 ? data.players[index] : null, player);
-      if (index >= 0) data.players[index] = merged;
-      else data.players.push(merged);
+      const merged = savePlayer(data, player);
       invite.playerKey = merged.playerKey;
-      data.inviteEvents.push(core.structuredCloneSafe(invite));
+      merged.lastInvitedAt = core.laterIso(merged.lastInvitedAt, invite.attemptedAt);
+      const key = app.dataQuality.inviteSignature(invite);
+      const duplicate = data.inviteEvents.findIndex((event) => app.dataQuality.inviteSignature(event) === key);
+      const result = duplicate >= 0 ? app.dataQuality.mergeInvite(data.inviteEvents[duplicate], invite) : null;
+      if (result && !result.conflict) {
+        Object.assign(invite, result.record);
+        data.inviteEvents[duplicate] = core.structuredCloneSafe(invite);
+      } else data.inviteEvents.push(core.structuredCloneSafe(invite));
       return { player: merged, invite };
     }
     async function upsertPlayers(namespace, players) {
@@ -2451,28 +2803,18 @@
       const mergedPlayers = [];
       for (const player of players || []) {
         if (!player?.normalizedName) continue;
-        const index = data.players.findIndex(
-          (item) =>
-            (player.characterId != null && item.characterId === player.characterId) ||
-            item.normalizedName === player.normalizedName
-        );
-        const existing = index >= 0 ? data.players[index] : null;
-        const merged = core.mergePlayer(existing, player);
-        if (existing && existing.playerKey !== merged.playerKey) {
-          for (const event of [...data.profileObservations, ...data.inviteEvents, ...data.leaderboardEntries]) {
-            if (event.playerKey === existing.playerKey) event.playerKey = merged.playerKey;
-          }
-        }
-        if (index >= 0) data.players[index] = merged;
-        else data.players.push(merged);
+        const merged = savePlayer(data, player);
         mergedPlayers.push(core.structuredCloneSafe(merged));
       }
       return mergedPlayers;
     }
     async function updateInvite(namespace, invite) {
       const data = get(namespace);
-      const index = data.inviteEvents.findIndex((event) => event.id === invite.id);
-      const next = index >= 0 ? { ...invite, playerKey: data.inviteEvents[index].playerKey } : invite;
+      const index = data.inviteEvents.findIndex((event) => event.id === invite.id || (
+        (event.playerKey === invite.playerKey || invite.playerKey.startsWith("name:")) &&
+        app.dataQuality.inviteSignature(event) === app.dataQuality.inviteSignature({ ...invite, playerKey: event.playerKey })
+      ));
+      const next = index >= 0 ? app.dataQuality.mergeInvite(data.inviteEvents[index], { ...invite, playerKey: data.inviteEvents[index].playerKey }).record : invite;
       if (index >= 0) data.inviteEvents[index] = core.structuredCloneSafe(next);
       return next;
     }
@@ -2572,6 +2914,11 @@
       checksum: checksumValue ? { algorithm: "SHA-256", value: checksumValue } : null,
       data: normalized
     };
+  }
+
+  function serializeBackup(backup) {
+    // Whitespace is not part of the data checksum. Keep the same portable schema.
+    return `${JSON.stringify(backup)}\n`;
   }
 
   function validatePlayer(player) {
@@ -2726,11 +3073,13 @@
     const currentInviteIds = new Set(current.inviteEvents.map((record) => record.id));
     const currentCaptureIds = new Set((current.leaderboardCaptures || []).map((record) => record.id));
     const currentEntryIds = new Set((current.leaderboardEntries || []).map((record) => record.id));
+    const merged = mergeSnapshots(current, backup.data, "merge");
     return {
       source: backup.source,
       exportedAt: backup.exportedAt,
       schemaVersion: backup.schemaVersion,
       crossIdentity: !identityMatches(backup.source, identity),
+      quality: merged.report,
       counts: backup.counts,
       duplicates: {
         players: backup.data.players.filter((record) => currentPlayerKeys.has(record.playerKey)).length,
@@ -2761,59 +3110,94 @@
       };
     }
     const players = new Map(current.players.map((record) => [record.playerKey, core.structuredCloneSafe(record)]));
-    const byCharacter = new Map(
-      current.players.filter((record) => record.characterId != null).map((record) => [Number(record.characterId), record.playerKey])
-    );
-    const byName = new Map(current.players.map((record) => [record.normalizedName, record.playerKey]));
+    const knownNames = new Map();
+    for (const player of [...current.players, ...incoming.players]) {
+      if (player.characterId == null) continue;
+      if (!knownNames.has(player.normalizedName)) knownNames.set(player.normalizedName, new Set());
+      knownNames.get(player.normalizedName).add(Number(player.characterId));
+    }
     const remap = new Map();
     const keyUpgrades = new Map();
     let addedPlayers = 0;
     let mergedPlayers = 0;
     for (const player of incoming.players) {
-      const matchKey =
-        (player.characterId != null && byCharacter.get(Number(player.characterId))) || byName.get(player.normalizedName);
-      if (!matchKey) {
+      let candidates = [...players.values()];
+      if (knownNames.get(player.normalizedName)?.size > 1) {
+        candidates = candidates.filter((record) => player.characterId == null
+          ? record.characterId == null
+          : record.characterId != null);
+      }
+      const matches = app.dataQuality.identityMatches(candidates, player);
+      if (!matches.length) {
         players.set(player.playerKey, core.structuredCloneSafe(player));
-        byName.set(player.normalizedName, player.playerKey);
-        if (player.characterId != null) byCharacter.set(Number(player.characterId), player.playerKey);
         remap.set(player.playerKey, player.playerKey);
         addedPlayers += 1;
       } else {
-        let resolvedKey = matchKey;
+        let resolvedKey = matches[0].playerKey;
         if (strategy === "merge") {
-          const merged = core.mergePlayer(players.get(matchKey), player);
-          resolvedKey = merged.playerKey;
-          if (resolvedKey !== matchKey) {
-            players.delete(matchKey);
-            keyUpgrades.set(matchKey, resolvedKey);
+          const resolved = app.dataQuality.mergeIdentity(candidates, player);
+          resolvedKey = resolved.player.playerKey;
+          for (const oldKey of resolved.oldKeys) {
+            players.delete(oldKey);
+            keyUpgrades.set(oldKey, resolvedKey);
           }
-          players.set(resolvedKey, merged);
-          byName.set(merged.normalizedName, resolvedKey);
-          if (merged.characterId != null) byCharacter.set(Number(merged.characterId), resolvedKey);
+          players.set(resolvedKey, resolved.player);
         }
         remap.set(player.playerKey, resolvedKey);
         mergedPlayers += 1;
       }
     }
+    const resolveKey = (key) => {
+      const seen = new Set();
+      let next = key;
+      while (keyUpgrades.has(next) && !seen.has(next)) {
+        seen.add(next);
+        next = keyUpgrades.get(next);
+      }
+      return next;
+    };
+    let updatedInvites = 0;
+    let eventConflicts = 0;
+    const observationAliases = new Map();
     function mergeEvents(name) {
       const hasPlayerKey = name !== "leaderboardCaptures";
       const existing = new Map(
         (current[name] || []).map((record) => {
           const next = core.structuredCloneSafe(record);
-          if (hasPlayerKey) next.playerKey = keyUpgrades.get(record.playerKey) || record.playerKey;
+          if (hasPlayerKey) next.playerKey = resolveKey(record.playerKey);
           return [record.id, next];
         })
       );
       let added = 0;
       let skipped = 0;
+      const signature = name === "inviteEvents" ? app.dataQuality.inviteSignature : app.dataQuality.signature;
+      const contentIds = new Map([...existing.values()].map((record) => [signature(record), record.id]));
       for (const record of incoming[name] || []) {
+        const next = core.structuredCloneSafe(record);
+        if (hasPlayerKey) next.playerKey = resolveKey(remap.get(record.playerKey) || record.playerKey);
+        if (name === "inviteEvents" && observationAliases.has(next.linkedObservationId)) next.linkedObservationId = observationAliases.get(next.linkedObservationId);
         if (existing.has(record.id)) {
+          const previous = existing.get(record.id);
+          if (strategy === "merge" && name === "inviteEvents") {
+            const result = app.dataQuality.mergeInvite(previous, next);
+            if (result.conflict) eventConflicts += 1;
+            else if (app.dataQuality.signature(previous) !== app.dataQuality.signature(result.record)) {
+              existing.set(record.id, result.record);
+              updatedInvites += 1;
+            }
+          } else if (app.dataQuality.signature(previous) !== app.dataQuality.signature(next)) eventConflicts += 1;
           skipped += 1;
           continue;
         }
-        const next = core.structuredCloneSafe(record);
-        if (hasPlayerKey) next.playerKey = remap.get(record.playerKey) || record.playerKey;
+        if (strategy === "add" && ["profileObservations", "inviteEvents"].includes(name) && contentIds.has(signature(next))) {
+          const keptId = contentIds.get(signature(next));
+          if (name === "profileObservations") observationAliases.set(next.id, keptId);
+          else if (app.dataQuality.mergeInvite(existing.get(keptId), next).conflict) eventConflicts += 1;
+          skipped += 1;
+          continue;
+        }
         existing.set(next.id, next);
+        contentIds.set(signature(next), next.id);
         added += 1;
       }
       return { values: [...existing.values()], added, skipped };
@@ -2822,15 +3206,20 @@
     const invites = mergeEvents("inviteEvents");
     const captures = mergeEvents("leaderboardCaptures");
     const leaderboardEntries = mergeEvents("leaderboardEntries");
+    const combined = {
+      players: [...players.values()],
+      profileObservations: observations.values,
+      inviteEvents: invites.values,
+      leaderboardCaptures: captures.values,
+      leaderboardEntries: leaderboardEntries.values
+    };
+    const compacted = strategy === "merge" ? app.dataQuality.compactSnapshot(combined) : { data: combined, report: {} };
     return {
-      data: {
-        players: [...players.values()],
-        profileObservations: observations.values,
-        inviteEvents: invites.values,
-        leaderboardCaptures: captures.values,
-        leaderboardEntries: leaderboardEntries.values
-      },
+      data: compacted.data,
       report: {
+        ...compacted.report,
+        updatedInvites: updatedInvites + (compacted.report.updatedInvites || 0),
+        eventConflicts: eventConflicts + (compacted.report.eventConflicts || 0),
         addedPlayers,
         mergedPlayers,
         addedObservations: observations.added,
@@ -2954,6 +3343,7 @@
     stableData,
     sha256,
     createBackup,
+    serializeBackup,
     validateBackup,
     parseBackupText,
     identityMatches,
@@ -3411,6 +3801,17 @@
       font-size: 12px;
     }
     .mwi-git-input::placeholder { color: #8394aa; }
+    .mwi-git-recruitment { grid-column: 1 / -1; min-width: 0; }
+    .mwi-git-recruitment > summary { padding: 7px 0; cursor: pointer; font-size: 12px; font-weight: 600; }
+    .mwi-git-recruitment > summary:focus-visible, .mwi-git-dialog button:focus-visible { outline: 2px solid var(--mwi-git-scan); outline-offset: 2px; }
+    .mwi-git-recruitment-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .mwi-git-filter-field { display: flex; flex-direction: column; min-width: 0; gap: 4px; font-size: 11px; color: var(--mwi-git-muted); }
+    .mwi-git-filter-field > input, .mwi-git-filter-field > select { width: 100%; box-sizing: border-box; }
+    .mwi-git-filter-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; }
+    .mwi-git-filter-actions button { min-height: 32px; height: auto; white-space: normal; }
+    .mwi-git-filter-help { color: var(--mwi-git-muted); font-size: 11px; line-height: 1.5; margin: 8px 0 0; }
+    .mwi-git-detail-followup { font-size: 12px; line-height: 1.5; margin-top: 6px; overflow-wrap: anywhere; }
+    .mwi-git-match-reasons { padding-left: 18px; margin: 4px 0; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; color: var(--mwi-git-muted); }
     .mwi-git-actions { display: flex; flex-wrap: wrap; gap: 6px; padding: 7px 14px; border-bottom: 1px solid #3f4160; }
     .mwi-git-summary { min-width: 0; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
     .mwi-git-body { flex: 1; min-height: 260px; display: grid; grid-template-columns: minmax(240px, 39%) minmax(0, 1fr); overflow: hidden; border: 1px solid var(--mwi-git-metal); border-radius: 6px; }
@@ -3630,13 +4031,15 @@
       cursor: help;
     }
     .mwi-git-dialog-backdrop { position: fixed; inset: 0; z-index: 2147483010; display: grid; place-items: center; padding: 18px; background: rgba(5,9,15,.76); }
-    .mwi-git-dialog { width: min(500px, 100%); max-height: 85vh; overflow: auto; padding: 16px; border: 1px solid var(--mwi-git-metal); border-radius: 8px; color: var(--mwi-git-text); background: var(--mwi-git-panel); box-shadow: 0 24px 70px var(--mwi-git-shadow); }
+    .mwi-git-dialog { box-sizing: border-box; width: min(500px, 100%); max-height: 85vh; overflow: auto; padding: 16px; border: 1px solid var(--mwi-git-metal); border-radius: 8px; color: var(--mwi-git-text); background: var(--mwi-git-panel); box-shadow: 0 24px 70px var(--mwi-git-shadow); }
+    .mwi-git-dialog p, .mwi-git-conflicts { font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+    .mwi-git-conflicts { padding-left: 18px; max-height: 150px; overflow: auto; }
     .mwi-git-dialog h2 { margin: 0 0 10px; font-size: 16px; }
     .mwi-git-preview { display: grid; grid-template-columns: minmax(80px, auto) minmax(0, 1fr); gap: 6px 14px; margin: 10px 0; padding: 10px 0; border-block: 1px solid #3f4160; font-size: 11px; }
     .mwi-git-preview > :nth-child(odd) { color: var(--mwi-git-muted); font-weight: 500; }
     .mwi-git-preview > :nth-child(even) { overflow-wrap: anywhere; text-align: right; }
     .mwi-git-warning { color: #ffd99c; font-size: 12px; line-height: 1.5; }
-    .mwi-git-dialog-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 14px; }
+    .mwi-git-dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; margin-top: 14px; padding: 8px 0; position: sticky; bottom: -16px; background: var(--mwi-git-panel); }
     .mwi-git-toast { position: fixed; right: 18px; bottom: 124px; z-index: 2147483020; max-width: min(420px, calc(100vw - 36px)); padding: 11px 14px; border: 1px solid var(--mwi-git-metal); border-radius: 7px; color: var(--mwi-git-text); background: var(--mwi-git-panel-2); box-shadow: 0 14px 36px var(--mwi-git-shadow); font-size: 12px; }
     .mwi-git-panel--native .mwi-git-header { gap: 7px; }
     .mwi-git-panel--native .mwi-git-title { font-size: 17px; }
@@ -4298,7 +4701,7 @@
         : state === "joined"
         ? i18n.t("hasGuild")
         : state === "inviting"
-          ? i18n.t("inviting")
+          ? i18n.t(invite?.outcome === "sent" ? "sent" : "inviting")
         : ["online", "offline", "insufficient"].includes(state)
           ? `${i18n.t("noGuild")} · ${i18n.engagementState(state)}`
           : i18n.t("notChecked")
@@ -5005,6 +5408,11 @@
       for (const [label, value] of fields) {
         grid.append(dom.element("span", { text: label }), dom.element("strong", { text: value }));
       }
+      if (preview.quality) {
+        for (const [key, value] of [["duplicateObservations", preview.quality.removedObservations || 0], ["duplicateInvites", preview.quality.removedInvites || 0], ["updatedInvites", preview.quality.updatedInvites || 0], ["identityConflicts", preview.quality.identityConflicts?.length || 0], ["eventConflicts", preview.quality.eventConflicts || 0]]) {
+          grid.append(dom.element("span", { text: i18n.t(key) }), dom.element("strong", { text: String(value) }));
+        }
+      }
       const warning = preview.crossIdentity
         ? dom.element("p", { className: "mwi-git-warning", text: i18n.t("importWarning") })
         : null;
@@ -5032,6 +5440,7 @@
       });
       actions.append(cancel, confirm);
       dialog.append(title, grid);
+      if (preview.quality?.eventConflicts) dialog.append(dom.element("p", { text: i18n.t("importConflictHelp") }));
       if (warning) dialog.append(warning);
       dialog.append(select, actions);
       backdrop.append(dialog);
@@ -5040,7 +5449,80 @@
     });
   }
 
-  app.importExportDialog = Object.freeze({ showImportDialog });
+  function showMaintenanceDialog(prepared, i18n, apply) {
+    return new Promise((resolve) => {
+      const trigger = root.document.activeElement;
+      const backdrop = dom.element("div", { className: "mwi-git-dialog-backdrop" });
+      const dialog = dom.element("section", { className: "mwi-git-dialog", attributes: { role: "dialog", "aria-modal": "true", "aria-labelledby": "mwi-git-maintenance-title" } });
+      const title = dom.element("h2", { text: i18n.t("maintenanceTitle"), attributes: { id: "mwi-git-maintenance-title" } });
+      const source = dom.element("p", { text: `${prepared.source.characterName} · ${prepared.source.hostname}` });
+      const grid = dom.element("div", { className: "mwi-git-preview" });
+      const report = prepared.report;
+      for (const [key, count] of [["duplicateObservations", report.removedObservations], ["duplicateInvites", report.removedInvites], ["updatedInvites", report.updatedInvites], ["identityConflicts", report.identityConflicts.length], ["eventConflicts", report.eventConflicts]]) {
+        grid.append(dom.element("span", { text: i18n.t(key) }), dom.element("strong", { text: String(count) }));
+      }
+      const status = dom.element("p", { attributes: { role: "status", "aria-live": "polite" } });
+      const actions = dom.element("div", { className: "mwi-git-dialog-actions" });
+      const cancel = dom.element("button", { className: "mwi-git-button", type: "button", text: i18n.t("cancel") });
+      const confirm = dom.element("button", { className: "mwi-git-button", type: "button", text: i18n.t("maintenanceConfirm") });
+      const hasChanges = report.removedObservations + report.removedInvites > 0;
+      let busy = false;
+      confirm.disabled = !hasChanges;
+      if (!hasChanges) status.textContent = i18n.t("maintenanceClean");
+      function finish(value) {
+        if (busy) return;
+        backdrop.remove();
+        trigger?.focus();
+        resolve(value);
+      }
+      cancel.addEventListener("click", () => finish(null));
+      confirm.addEventListener("click", async () => {
+        if (busy || !hasChanges) return;
+        busy = true;
+        confirm.disabled = true;
+        cancel.disabled = true;
+        dialog.setAttribute("aria-busy", "true");
+        status.textContent = i18n.t("maintenanceBusy");
+        try {
+          const result = await apply(prepared);
+          busy = false;
+          finish(result);
+        } catch (error) {
+          busy = false;
+          cancel.disabled = false;
+          confirm.disabled = error.message === "maintenance_changed";
+          dialog.setAttribute("aria-busy", "false");
+          status.textContent = i18n.t(error.message === "maintenance_changed" ? "maintenanceChanged" : "maintenanceFailed");
+          cancel.focus();
+        }
+      });
+      backdrop.addEventListener("click", (event) => { if (event.target === backdrop) finish(null); });
+      backdrop.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") { event.stopPropagation(); finish(null); }
+        if (event.key === "Tab") {
+          const controls = [cancel, confirm].filter((control) => !control.disabled);
+          if (!controls.length) { event.preventDefault(); return; }
+          const first = controls[0];
+          const last = controls.at(-1);
+          if (event.shiftKey && root.document.activeElement === first) { event.preventDefault(); last.focus(); }
+          else if (!event.shiftKey && root.document.activeElement === last) { event.preventDefault(); first.focus(); }
+        }
+      });
+      actions.append(cancel, confirm);
+      dialog.append(title, source, dom.element("p", { text: i18n.t("maintenanceHelp") }), grid);
+      if (report.identityConflicts.length) {
+        const conflicts = dom.element("ul", { className: "mwi-git-conflicts" });
+        for (const conflict of report.identityConflicts) conflicts.append(dom.element("li", { text: `${conflict.name}: ${conflict.playerKeys.join(" / ")}` }));
+        dialog.append(conflicts);
+      }
+      dialog.append(status, actions);
+      backdrop.append(dialog);
+      root.document.body.append(backdrop);
+      cancel.focus();
+    });
+  }
+
+  app.importExportDialog = Object.freeze({ showImportDialog, showMaintenanceDialog });
 })(globalThis);
 
 // ---- src/ui/invite-history-view.js ----
@@ -5138,7 +5620,7 @@
       index
     );
     if (!players.length) {
-      container.append(dom.element("div", { className: "mwi-git-empty", text: i18n.t("emptyPlayers") }));
+      container.append(dom.element("div", { className: "mwi-git-empty", text: i18n.t(data.players.length ? "clearFilterHint" : "emptyPlayers") }));
       return players;
     }
     const start = Math.max(0, Math.min(players.length, Number(view.start) || 0));
@@ -5180,9 +5662,11 @@
         dom.element("span", { className: "mwi-git-player-name", text: player.currentName, title: player.currentName }),
         totalLevelLabel(player, index, i18n)
       );
-      const metadata = player.latestGuild?.state === "none"
+      let metadata = player.latestGuild?.state === "none"
         ? `${guildLabel(player, i18n)} · ${playStatusLabel(player, observation, assessment, i18n)}`
         : guildLabel(player, i18n);
+      const match = core.recruitmentMatch(player, options, index);
+      if (match.matches && match.reasons.length) metadata = match.reasons.map((reason) => matchReason(reason, i18n)).join(" · ");
       copy.append(headline, dom.element("span", {
         className: "mwi-git-player-meta",
         text: metadata,
@@ -5212,7 +5696,16 @@
     return details.filter(Boolean).join(" · ");
   }
 
-  function renderTimeline(container, player, data, i18n, onDelete, onOpenProfile, existingIndex = null) {
+  function matchReason(reason, i18n) {
+    if (reason.kind === "followup") return i18n.t(`followup_${reason.state}`);
+    const at = dom.formatDate(reason.at, i18n.language);
+    if (reason.kind === "growth") return `${i18n.category(reason.category)} · ${i18n.t("growthRecorded")} +${Math.round(reason.delta).toLocaleString()} (${dom.formatDate(reason.from, i18n.language)} → ${at})`;
+    if (reason.kind === "guild") return `${i18n.t("guildStatus")} · ${at}`;
+    if (reason.kind === "skill") return `${i18n.category(reason.category)} ${reason.level} · ${at}`;
+    return `${i18n.leaderboardType(reason.type)} · ${i18n.category(reason.category)} · ${i18n.t("rank")} ${reason.rank} · ${at}`;
+  }
+
+  function renderTimeline(container, player, data, i18n, onDelete, onOpenProfile, existingIndex = null, options = {}) {
     dom.clear(container);
     if (!player) {
       timelineViews.delete(container);
@@ -5252,6 +5745,17 @@
       className: "mwi-git-detail-checked",
       text: `${i18n.t("checkedAt")} ${dom.formatDate(player.latestGuild?.observedAt, i18n.language)}`
     }));
+    const followup = index.recruitment.get(player.playerKey)?.followup;
+    if (followup && followup.state !== "never_invited") {
+      title.append(dom.element("div", { className: "mwi-git-detail-followup", text: `${i18n.t("followupLabel")} · ${i18n.t(`followup_${followup.state}`)}${followup.at ? ` · ${dom.formatDate(followup.at, i18n.language)}` : ""}` }));
+      if (followup.firstObservedAt) title.append(dom.element("div", { className: "mwi-git-detail-checked", text: `${i18n.t("firstObservedMember")} · ${dom.formatDate(followup.firstObservedAt, i18n.language)}` }));
+    }
+    const match = core.recruitmentMatch(player, options, index);
+    if (match.matches && match.reasons.length) {
+      const evidence = dom.element("ul", { className: "mwi-git-match-reasons", attributes: { "aria-label": i18n.t("matchReasons") } });
+      for (const reason of match.reasons) evidence.append(dom.element("li", { text: matchReason(reason, i18n) }));
+      title.append(dom.element("div", { className: "mwi-git-detail-checked", text: i18n.t("matchReasons") }), evidence);
+    }
     const remove = dom.element("button", {
       className: "mwi-git-button mwi-git-button--danger",
       text: i18n.t("deletePlayer"),
@@ -5297,7 +5801,7 @@
         ? core.profileEvidenceBetween(event.previousObservation, event).evidence
         : [];
       const detail = invite
-        ? `${i18n.t("outcome")}：${i18n.t(event.outcome)}`
+        ? `${i18n.t("outcome")}：${i18n.t(event.outcome)} · ${i18n.t(`followup_${core.inviteFollowup(player, profileEvents, event).state}`)}`
         : leaderboard
           ? [
             i18n.leaderboardType(event.typeHrid),
@@ -5410,6 +5914,13 @@
       engagementState: initialView.engagementState || "all",
       category: initialView.category || "all",
       inviteOutcome: initialView.inviteOutcome || "all",
+      followup: initialView.followup || "all",
+      growthDays: initialView.growthDays || "all",
+      guildDays: initialView.guildDays || "all",
+      skill: initialView.skill || "all",
+      minSkillLevel: initialView.minSkillLevel || "",
+      maxRank: initialView.maxRank || "",
+      rankType: initialView.rankType || "all",
       days: initialView.days || "all",
       sort: initialView.sort || "lastViewedAt",
       direction: initialView.direction === "asc" ? "asc" : "desc"
@@ -5542,14 +6053,90 @@
     days.value = settings.days;
     sort.value = settings.sort;
     toolbar.append(search, guildState, activityState, engagementState, category, inviteOutcome, days, sort);
+    const recruitment = dom.element("details", { className: "mwi-git-recruitment" });
+    recruitment.open = [settings.followup, settings.growthDays, settings.guildDays, settings.skill].some((value) => value !== "all") || Boolean(settings.maxRank);
+    recruitment.append(dom.element("summary", { text: i18n.t("recruitmentFilters") }));
+    const recruitmentControls = dom.element("div", { className: "mwi-git-recruitment-controls" });
+    const controls = new Map();
+    const validations = new Map();
+    function selection(key, label, values) {
+      const select = dom.element("select", { className: "mwi-git-select", attributes: { "aria-label": i18n.t(label) } });
+      for (const [value, text] of values) select.append(dom.element("option", { text, attributes: { value } }));
+      select.value = settings[key];
+      select.addEventListener("change", () => {
+        settings[key] = select.value;
+        if (key === "skill") controls.get("minSkillLevel").disabled = select.value === "all";
+        renderAfterFilterChange();
+      });
+      controls.set(key, select);
+      const wrapper = dom.element("label", { className: "mwi-git-filter-field" });
+      wrapper.append(dom.element("span", { text: i18n.t(label) }), select);
+      recruitmentControls.append(wrapper);
+      return select;
+    }
+    selection("followup", "followupLabel", [["all", i18n.t("allFollowups")], ...["never_invited", "not_reviewed", "still_none", "joined_own", "joined_other", "joined_unknown", "not_sent"].map((value) => [value, i18n.t(`followup_${value}`)])]);
+    selection("growthDays", "growthDays", [["all", i18n.t("growthAny")], ["7", i18n.t("growth7")], ["30", i18n.t("growth30")]]);
+    selection("guildDays", "guildDays", [["all", i18n.t("guildAny")], ["7", i18n.t("guild7")], ["30", i18n.t("guild30")]]);
+    const skillOptions = ["milking", "foraging", "woodcutting", "cheesesmithing", "crafting", "tailoring", "cooking", "brewing", "alchemy", "enhancing", "stamina", "intelligence", "attack", "melee", "defense", "ranged", "magic"];
+    selection("skill", "skill", [["all", i18n.t("allSkills")], ...skillOptions.map((value) => [value, i18n.category(value)])]);
+    for (const key of ["minSkillLevel", "maxRank"]) {
+      const input = dom.element("input", { className: "mwi-git-input", type: "number", attributes: { min: "1", step: "1", "aria-label": i18n.t(key) } });
+      const validation = dom.element("span", { className: "mwi-git-warning", text: i18n.t("positiveInteger"), attributes: { hidden: "", id: `mwi-git-${key}-error` } });
+      validations.set(key, validation);
+      input.value = settings[key];
+      if (key === "minSkillLevel") input.disabled = settings.skill === "all";
+      input.addEventListener("input", () => {
+        settings[key] = input.value;
+        const valid = input.value === "" || Number.isInteger(Number(input.value)) && Number(input.value) > 0;
+        validation.hidden = valid;
+        input.setAttribute("aria-invalid", String(!valid));
+        input.setAttribute("aria-describedby", `mwi-git-${key}-error`);
+        renderAfterFilterChange();
+      });
+      const label = dom.element("label", { className: "mwi-git-filter-field" });
+      label.append(dom.element("span", { text: i18n.t(key) }), input, validation);
+      recruitmentControls.append(label);
+      controls.set(key, input);
+    }
+    selection("rankType", "rankType", [["all", i18n.t("allRankTypes")], ...["standard", "steam_standard", "ironcow", "steam_ironcow"].map((value) => [value, i18n.leaderboardType(value)])]);
+    const preset = dom.element("button", { className: "mwi-git-button", text: i18n.t("recentCandidates"), type: "button" });
+    const reset = dom.element("button", { className: "mwi-git-button", text: i18n.t("resetFilters"), type: "button" });
+    function resetFilters() {
+      for (const [key, control] of [["query", search], ["guildState", guildState], ["activityState", activityState], ["engagementState", engagementState], ["category", category], ["inviteOutcome", inviteOutcome], ["days", days], ...controls]) {
+        settings[key] = ["query", "minSkillLevel", "maxRank"].includes(key) ? "" : "all";
+        control.value = settings[key];
+      }
+      controls.get("minSkillLevel").disabled = true;
+      for (const key of ["minSkillLevel", "maxRank"]) {
+        controls.get(key).setAttribute("aria-invalid", "false");
+        validations.get(key).hidden = true;
+      }
+    }
+    preset.addEventListener("click", () => {
+      resetFilters();
+      settings.guildState = guildState.value = "none";
+      for (const [key, value] of [["growthDays", "7"], ["guildDays", "7"], ["followup", "never_invited"]]) {
+        settings[key] = controls.get(key).value = value;
+      }
+      settings.sort = sort.value = "totalLevel";
+      settings.direction = "desc";
+      recruitment.open = true;
+      renderAfterFilterChange();
+    });
+    reset.addEventListener("click", () => { resetFilters(); renderAfterFilterChange(); });
+    const filterActions = dom.element("div", { className: "mwi-git-filter-actions" });
+    filterActions.append(preset, reset);
+    recruitment.append(filterActions, recruitmentControls, dom.element("p", { className: "mwi-git-filter-help", text: i18n.t("filterHelp") }));
+    toolbar.append(recruitment);
 
     const actions = dom.element("div", { className: "mwi-git-actions" });
     const exportJson = dom.element("button", { className: "mwi-git-button", text: i18n.t("exportJson"), type: "button" });
     const exportCsv = dom.element("button", { className: "mwi-git-button", text: i18n.t("exportCsv"), type: "button" });
     const importJson = dom.element("button", { className: "mwi-git-button", text: i18n.t("importJson"), type: "button" });
+    const maintenance = dom.element("button", { className: "mwi-git-button", text: i18n.t("maintenance"), type: "button" });
     const clear = dom.element("button", { className: "mwi-git-button mwi-git-button--danger", text: i18n.t("clear"), type: "button" });
     const file = dom.element("input", { type: "file", attributes: { accept: "application/json,.json", hidden: "" } });
-    actions.append(exportJson, exportCsv, importJson, clear, file);
+    actions.append(exportJson, exportCsv, importJson, maintenance, clear, file);
 
     const filterSection = dom.element("section", { className: "mwi-git-collapsible" });
     const actionSection = dom.element("section", { className: "mwi-git-collapsible" });
@@ -5696,7 +6283,7 @@
         await controller.refresh();
       }, (name) => {
         if (!controller.openProfile(name)) toast(i18n.t("profileUnavailable"));
-      }, currentIndex);
+      }, currentIndex, settings);
       timelineDirty = false;
     }
 
@@ -5738,6 +6325,7 @@
     function renderAfterFilterChange() {
       playersDirty = true;
       renderPlayers({ refilter: true, resetScroll: true });
+      renderTimeline();
     }
     search.addEventListener("input", () => { settings.query = search.value; renderAfterFilterChange(); });
     guildState.addEventListener("change", () => { settings.guildState = guildState.value; renderAfterFilterChange(); });
@@ -5764,6 +6352,18 @@
     exportJson.addEventListener("click", () => controller.exportJson());
     exportCsv.addEventListener("click", () => controller.exportCsv());
     importJson.addEventListener("click", () => file.click());
+    maintenance.addEventListener("click", async () => {
+      maintenance.disabled = true;
+      try {
+        const prepared = await controller.prepareMaintenance();
+        const report = await app.importExportDialog.showMaintenanceDialog(prepared, i18n, controller.applyMaintenance);
+        if (report) toast(i18n.t("maintenanceSuccess"));
+      } catch (_error) {
+        toast(i18n.t("maintenanceFailed"));
+      } finally {
+        maintenance.disabled = false;
+      }
+    });
     file.addEventListener("change", async () => {
       const selected = file.files?.[0];
       file.value = "";
@@ -5896,6 +6496,7 @@
   let currentLeaderboard = null;
   let observer = null;
   let protocolChain = Promise.resolve();
+  const importTargets = new WeakMap();
   const queuedActions = [];
   const DECORATION_REGIONS = ["leaderboard", "chat", "social", "roster"];
   const dirtyRegions = new Set();
@@ -6148,7 +6749,7 @@
       if (!identity || !namespace) return panel?.toast(i18n.t("waitIdentity"));
       const backup = await app.importExport.createBackup(await repository.snapshot(namespace), identity);
       app.importExport.downloadText(
-        `${JSON.stringify(backup, null, 2)}\n`,
+        app.importExport.serializeBackup(backup),
         app.importExport.backupFilename(identity)
       );
     },
@@ -6164,33 +6765,61 @@
       root.setTimeout(() => app.importExport.downloadText(exports.leaderboardEntries, `${base}-leaderboard-entries.csv`, "text/csv;charset=utf-8"), 400);
     },
     async prepareImport(text) {
+      await protocolChain;
       if (!identity || !namespace) throw new Error("identity_unavailable");
+      const targetNamespace = namespace;
+      const source = { ...identity };
       const backup = await app.importExport.parseBackupText(text);
-      const preview = app.importExport.previewImport(await repository.snapshot(namespace), backup, identity);
+      const preview = app.importExport.previewImport(await repository.snapshot(targetNamespace), backup, source);
+      importTargets.set(backup, targetNamespace);
       return { backup, preview };
     },
-    async applyImport(backup, strategy) {
+    applyImport(backup, strategy) {
+      const pending = protocolChain.then(async () => {
+        if (!identity || !namespace || importTargets.get(backup) !== namespace) throw new Error("maintenance_changed");
+        if (!["replace", "merge", "add"].includes(strategy)) throw new Error("invalid_strategy");
+        const targetNamespace = namespace;
+        const source = { ...identity };
+        const current = await repository.snapshot(targetNamespace);
+        const merged = app.importExport.mergeSnapshots(current, backup.data, strategy);
+        if (strategy !== "add") {
+          const automaticBackup = await app.importExport.createBackup(current, source);
+          app.importExport.downloadText(app.importExport.serializeBackup(automaticBackup),
+            app.importExport.backupFilename(source).replace(".json", `-before-${strategy}.json`));
+        }
+        await repository.replaceSnapshot(targetNamespace, merged.data, current);
+        await refresh();
+        return merged.report;
+      });
+      protocolChain = pending.catch((error) => console.error("[MWI Guild Invite Tracker] Import failed", error));
+      return pending;
+    },
+    async prepareMaintenance() {
+      await protocolChain;
       if (!identity || !namespace) throw new Error("identity_unavailable");
-      const current = await repository.snapshot(namespace);
-      if (strategy === "replace") {
-        const automaticBackup = await app.importExport.createBackup(current, identity);
-        app.importExport.downloadText(
-          `${JSON.stringify(automaticBackup, null, 2)}\n`,
-          app.importExport.backupFilename(identity).replace(".json", "-before-replace.json")
-        );
-        await repository.replaceSnapshot(namespace, app.core.structuredCloneSafe(backup.data));
-        return {
-          addedPlayers: backup.data.players.length,
-          addedObservations: backup.data.profileObservations.length,
-          addedInvites: backup.data.inviteEvents.length,
-          addedLeaderboardCaptures: backup.data.leaderboardCaptures.length,
-          addedLeaderboardEntries: backup.data.leaderboardEntries.length,
-          replaced: true
-        };
-      }
-      const merged = app.importExport.mergeSnapshots(current, backup.data, strategy);
-      await repository.replaceSnapshot(namespace, merged.data);
-      return merged.report;
+      const targetNamespace = namespace;
+      const source = { ...identity };
+      const snapshot = await repository.snapshot(targetNamespace);
+      const backup = await app.importExport.createBackup(snapshot, source);
+      const result = app.dataQuality.compactSnapshot(snapshot);
+      return { namespace: targetNamespace, source, checksum: backup.checksum?.value, report: result.report };
+    },
+    applyMaintenance(prepared) {
+      const pending = protocolChain.then(async () => {
+        if (!prepared.checksum || namespace !== prepared.namespace) throw new Error("maintenance_changed");
+        const current = await repository.snapshot(prepared.namespace);
+        const backup = await app.importExport.createBackup(current, prepared.source);
+        if (backup.checksum?.value !== prepared.checksum) throw new Error("maintenance_changed");
+        const result = app.dataQuality.compactSnapshot(current);
+        if (!result.report.removedObservations && !result.report.removedInvites) return result.report;
+        app.importExport.downloadText(app.importExport.serializeBackup(backup),
+          app.importExport.backupFilename(prepared.source).replace(".json", "-before-cleanup.json"));
+        await repository.replaceSnapshot(prepared.namespace, result.data, current);
+        await refresh();
+        return result.report;
+      });
+      protocolChain = pending.catch((error) => console.error("[MWI Guild Invite Tracker] Cleanup failed", error));
+      return pending;
     },
     async clear() {
       if (namespace) await repository.clearNamespace(namespace);
