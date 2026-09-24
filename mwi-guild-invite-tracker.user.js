@@ -2,7 +2,7 @@
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
 // @namespace    https://github.com/LaYuDr/mwi-guild-invite-tracker
-// @version      0.5.27
+// @version      0.5.28
 // @updateURL    https://github.com/LaYuDr/mwi-guild-invite-tracker/releases/latest/download/mwi-guild-invite-tracker.user.js
 // @downloadURL  https://github.com/LaYuDr/mwi-guild-invite-tracker/releases/latest/download/mwi-guild-invite-tracker.user.js
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
@@ -23,7 +23,7 @@
 
   app.config = Object.freeze({
     appId: "mwi-guild-invite-tracker",
-    version: "0.5.27",
+    version: "0.5.28",
     schemaVersion: 3,
     databaseName: "mwi-guild-invite-tracker",
     databaseVersion: 2,
@@ -3970,7 +3970,7 @@
       cursor: pointer;
       flex: 0 0 auto;
     }
-    .mwi-git-chat-timestamp {
+    [class*="ChatMessage_chatMessage__"] .mwi-git-chat-timestamp {
       display: inline-block;
       inline-size: 10ch;
       font-variant-numeric: tabular-nums;
@@ -5028,6 +5028,16 @@
   const core = app.core;
   const CHAT_NAME_SELECTOR = '[class*="ChatMessage_name__"]';
   const CHARACTER_NAME_SELECTOR = '[class*="CharacterName_characterName__"]';
+  const CHAT_MESSAGE_SELECTOR = '[class*="ChatMessage_chatMessage__"]';
+  const CHAT_TIMESTAMP_SELECTOR = '[class*="ChatMessage_timestamp__"]';
+
+  function timestampForName(nameNode) {
+    // The live game wraps the name in several spans/divs. Its timestamp belongs
+    // to the message row, not necessarily to the name's immediate parent.
+    const message = nameNode?.closest?.(CHAT_MESSAGE_SELECTOR);
+    const timestamp = message?.querySelector?.(CHAT_TIMESTAMP_SELECTOR) || nameNode?.previousElementSibling;
+    return /^\[\d{1,2}:\d{2}(?::\d{2})?\]$/.test(timestamp?.textContent?.trim() || "") ? timestamp : null;
+  }
 
   function leafTextCandidates(node, includeNumeric = false) {
     const descendants = Array.from(node?.querySelectorAll?.("*") || []);
@@ -5099,8 +5109,8 @@
       if (nameNode.closest?.(".mwi-git-panel")) continue;
       const name = chatCharacterName(nameNode, maps);
       if (!name) continue;
-      const timestamp = nameNode.previousElementSibling;
-      if (/^\[\d{1,2}:\d{2}(?::\d{2})?\]$/.test(timestamp?.textContent?.trim() || "")) {
+      const timestamp = timestampForName(nameNode);
+      if (timestamp) {
         timestamp.classList.add("mwi-git-chat-timestamp");
         timestamps.add(timestamp);
       }
@@ -5152,6 +5162,7 @@
     CHARACTER_NAME_SELECTOR,
     leafTextCandidates,
     chatCharacterName,
+    timestampForName,
     profileTargetFromEvent,
     decorate,
     clear
