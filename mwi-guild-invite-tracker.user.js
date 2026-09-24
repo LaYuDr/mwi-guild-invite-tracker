@@ -2,7 +2,9 @@
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
 // @namespace    https://github.com/LaYuDr/mwi-guild-invite-tracker
-// @version      0.5.26
+// @version      0.5.27
+// @updateURL    https://github.com/LaYuDr/mwi-guild-invite-tracker/releases/latest/download/mwi-guild-invite-tracker.user.js
+// @downloadURL  https://github.com/LaYuDr/mwi-guild-invite-tracker/releases/latest/download/mwi-guild-invite-tracker.user.js
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
 // @description:en Passively records leaderboard profile views, guild status, and native guild invite outcomes
 // @match        https://www.milkywayidle.com/*
@@ -21,7 +23,7 @@
 
   app.config = Object.freeze({
     appId: "mwi-guild-invite-tracker",
-    version: "0.5.26",
+    version: "0.5.27",
     schemaVersion: 3,
     databaseName: "mwi-guild-invite-tracker",
     databaseVersion: 2,
@@ -158,7 +160,7 @@
   }
 
   function observationIndicatesOnline(event) {
-    return activityStateForObservation(event) === "work" || event?.presenceSnapshot?.state === "online";
+    return event?.source === "chat" || activityStateForObservation(event) === "work" || event?.presenceSnapshot?.state === "online";
   }
 
   function mergeAliases(existing, incoming, currentName) {
@@ -925,6 +927,15 @@
   const app = (root.MWIGuildInviteTracker = root.MWIGuildInviteTracker || {});
   const messages = {
     zh: {
+      rosterObserved: "公会成员页观察",
+      rosterActivity: "活动",
+      rosterCombat: "战斗",
+      rosterPresence: "状态",
+      rosterActivityBlank: "空白（未显示活动）",
+      presence_online: "在线",
+      presence_offline: "离线",
+      presence_hidden: "隐藏",
+      presence_unknown: "未知",
       launcher: "邀请",
       sidebar: "邀请",
       title: "邀请",
@@ -1097,6 +1108,15 @@
       language: "切换语言"
     },
     en: {
+      rosterObserved: "Guild roster observation",
+      rosterActivity: "Activity",
+      rosterCombat: "Combat",
+      rosterPresence: "Status",
+      rosterActivityBlank: "Blank (no activity displayed)",
+      presence_online: "Online",
+      presence_offline: "Offline",
+      presence_hidden: "Hidden",
+      presence_unknown: "Unknown",
       currentVersion: "Current version",
       latestVersion: "Latest version",
       updateUnchecked: "Not checked",
@@ -2086,6 +2106,7 @@
     const randomUUID = options.randomUUID;
     let identity = options.identity || null;
     let leaderboard = null;
+    let profileTarget = null;
     const pendingLeaderboards = [];
     const pendingProfiles = [];
     const pendingInvites = [];
@@ -2106,8 +2127,8 @@
           pendingInvites.splice(index, 1);
         }
       }
-      for (const [key, timestamp] of recentProfiles) {
-        if (timestamp < now - config.duplicateWindowMs * 4) recentProfiles.delete(key);
+      for (const [key, recent] of recentProfiles) {
+        if (recent.at < now - config.duplicateWindowMs * 4) recentProfiles.delete(key);
       }
     }
 
@@ -2209,6 +2230,7 @@
       if (!event) return [];
       prune(Date.parse(event.at || 0) || Date.now());
       if (event.kind === "identity") {
+        profileTarget = null;
         identity = event.identity;
         const actions = [{ type: "identity", identity }];
         const joined = (event.guildCharacters || []).filter(
@@ -2244,27 +2266,35 @@
         });
         return [{ type: "leaderboard", leaderboard: requestedLeaderboard, pending: true }];
       }
+      if (event.kind === "profile_target_selected") {
+        profileTarget = { name: core.normalizeName(event.name), source: event.source, at: event.at };
+        return [];
+      }
       if (event.kind === "profile_requested") {
+        const age = Date.parse(event.at) - Date.parse(profileTarget?.at);
+        const fromChat = profileTarget?.source === "chat" &&
+          profileTarget.name === core.normalizeName(event.name) && age >= 0 && age <= config.profileTimeoutMs;
+        profileTarget = null;
         pendingProfiles.push({
           name: event.name,
           normalizedName: core.normalizeName(event.name),
           requestedAt: event.at,
-          context: leaderboardContext(event.name),
+          context: fromChat ? { source: "chat", leaderboard: null } : leaderboardContext(event.name),
           resolved: false
         });
         return [];
       }
       if (event.kind === "profile_received") {
         const normalized = core.normalizeName(event.profile.name);
-        const duplicateKey = `${normalized}|${JSON.stringify(event.profile)}|${leaderboard?.revision || 0}`;
-        const last = recentProfiles.get(duplicateKey);
-        const time = Date.parse(event.at);
-        if (last && time - last < config.duplicateWindowMs) return [];
-        recentProfiles.set(duplicateKey, time);
         const candidates = pendingByName(pendingProfiles, event.profile.name);
         const pending = candidates[candidates.length - 1];
         if (pending) pending.resolved = true;
         const context = pending ? pending.context : { source: "unknown", leaderboard: null };
+        const duplicateKey = `${normalized}|${JSON.stringify(event.profile)}|${leaderboard?.revision || 0}`;
+        const last = recentProfiles.get(duplicateKey);
+        const time = Date.parse(event.at);
+        if (last && time - last.at < config.duplicateWindowMs && (!pending || last.source === context.source)) return [];
+        recentProfiles.set(duplicateKey, { at: time, source: context.source });
         const observation = core.makeObservation(event.profile, context, event.at, randomUUID);
         return [{ type: "record_observation", player: core.playerFromProfile(event.profile, event.at), observation }];
       }
@@ -3281,7 +3311,7 @@
       ])
     ];
     const observations = [
-      ["id", "playerKey", "characterName", "viewedAt", "source", "leaderboardType", "leaderboardCategory", "rank", "value1", "value2", "guildState", "guildName", "guildRole", "activityState"],
+      ["id", "playerKey", "characterName", "viewedAt", "source", "leaderboardType", "leaderboardCategory", "rank", "value1", "value2", "guildState", "guildName", "guildRole", "activityState", "actionType", "presenceState"],
       ...data.profileObservations.map((event) => [
         event.id,
         event.playerKey,
@@ -3296,7 +3326,9 @@
         event.guildSnapshot?.state,
         event.guildSnapshot?.guildName,
         event.guildSnapshot?.guildRole,
-        core.activityStateForObservation(event)
+        core.activityStateForObservation(event),
+        event.presenceSnapshot?.actionType,
+        event.presenceSnapshot?.state
       ])
     ];
     const invites = [
@@ -3938,6 +3970,14 @@
       cursor: pointer;
       flex: 0 0 auto;
     }
+    .mwi-git-chat-timestamp {
+      display: inline-block;
+      inline-size: 10ch;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .mwi-git-guild-marker--chat { --mwi-git-marker-size: 1.2em; }
+    [class*="ChatMessage_name__"]:has(> .mwi-git-guild-marker--chat) { display: inline; }
     .mwi-git-tooltip {
       position: fixed;
       z-index: 2147483647;
@@ -5027,6 +5067,24 @@
     for (const marker of Array.from(root.document.querySelectorAll('.mwi-git-guild-marker[data-location="chat"]'))) {
       marker.remove();
     }
+    for (const timestamp of root.document.querySelectorAll(".mwi-git-chat-timestamp")) {
+      timestamp.classList.remove("mwi-git-chat-timestamp");
+    }
+  }
+
+  function profileTargetFromEvent(event) {
+    if (event.type === "keydown" && (event.repeat || !["Enter", " ", "Spacebar"].includes(event.key))) return null;
+    const target = event.target?.nodeType === 3 ? event.target.parentElement : event.target;
+    if (target?.closest?.(".mwi-git-panel")) return null;
+    const marker = target?.closest?.(".mwi-git-guild-marker");
+    if (marker) return { name: marker.dataset.playerName, source: marker.dataset.location === "chat" ? "chat" : "unknown" };
+    const chat = target?.closest?.(CHAT_NAME_SELECTOR);
+    const nativeName = target?.closest?.(CHARACTER_NAME_SELECTOR);
+    if (!chat && !nativeName) return null;
+    return {
+      name: chatCharacterName(chat || nativeName, { byName: new Map() }),
+      source: chat ? "chat" : "unknown"
+    };
   }
 
   function decorate(data, i18n, identity, enabled = true, onOpenProfile = null) {
@@ -5036,10 +5094,16 @@
     }
     const maps = app.leaderboardDecorations.summaryMaps(data);
     const used = new Set();
+    const timestamps = new Set();
     for (const nameNode of Array.from(root.document.querySelectorAll(CHAT_NAME_SELECTOR))) {
       if (nameNode.closest?.(".mwi-git-panel")) continue;
       const name = chatCharacterName(nameNode, maps);
       if (!name) continue;
+      const timestamp = nameNode.previousElementSibling;
+      if (/^\[\d{1,2}:\d{2}(?::\d{2})?\]$/.test(timestamp?.textContent?.trim() || "")) {
+        timestamp.classList.add("mwi-git-chat-timestamp");
+        timestamps.add(timestamp);
+      }
       const player = maps.byName.get(core.normalizeName(name)) || null;
       const observation = player ? maps.observations.get(player.playerKey) : null;
       const invite = player ? maps.invites.get(player.playerKey) : null;
@@ -5069,17 +5133,17 @@
       if (marker.hasAttribute("title")) marker.removeAttribute("title");
       const ariaLabel = `${name}: ${title.replace(/\n/g, ", ")}`;
       if (marker.getAttribute("aria-label") !== ariaLabel) marker.setAttribute("aria-label", ariaLabel);
-      app.leaderboardDecorations.setStyleIfChanged?.(
-        marker,
-        "--mwi-git-marker-size",
-        `${app.leaderboardDecorations.markerSizeForCell(nameNode)}px`
-      );
+      // Chat is a column of repeated markers; native badges may have different sizes.
+      if (marker.style.getPropertyValue("--mwi-git-marker-size")) marker.style.removeProperty("--mwi-git-marker-size");
       app.profileNavigation?.bindMarker(marker, name, onOpenProfile);
       if (nameNode.firstChild !== marker) nameNode.prepend(marker);
       used.add(marker);
     }
     for (const marker of Array.from(root.document.querySelectorAll('.mwi-git-guild-marker[data-location="chat"]'))) {
       if (!used.has(marker)) marker.remove();
+    }
+    for (const timestamp of root.document.querySelectorAll(".mwi-git-chat-timestamp")) {
+      if (!timestamps.has(timestamp)) timestamp.classList.remove("mwi-git-chat-timestamp");
     }
   }
 
@@ -5088,6 +5152,7 @@
     CHARACTER_NAME_SELECTOR,
     leafTextCandidates,
     chatCharacterName,
+    profileTargetFromEvent,
     decorate,
     clear
   });
@@ -5403,6 +5468,112 @@
   });
 })(globalThis);
 
+// ---- src/ui/guild-roster-observer.js ----
+(function initGuildRosterObserver(root) {
+  "use strict";
+
+  const app = (root.MWIGuildInviteTracker = root.MWIGuildInviteTracker || {});
+  const core = app.core;
+  const ACTIONS = new Set(["milking", "foraging", "woodcutting", "cheesesmithing", "crafting", "tailoring", "cooking", "brewing", "alchemy", "enhancing", "combat"]);
+  const PRESENCE = new Map([["在线", "online"], ["online", "online"], ["离线", "offline"], ["offline", "offline"], ["隐藏", "hidden"], ["hidden", "hidden"]]);
+  const text = (node) => app.guildRosterDecorations.normalizedText(node);
+
+  function visible(node) {
+    if (!node?.isConnected || !node.getClientRects().length) return false;
+    for (let current = node; current; current = current.parentElement) {
+      if (current.hidden || current.getAttribute("aria-hidden") === "true") return false;
+      const style = root.getComputedStyle(current);
+      if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse") return false;
+    }
+    return true;
+  }
+
+  function activity(cell) {
+    const icons = Array.from(cell.querySelectorAll("img, svg use"));
+    for (const icon of icons) {
+      for (const attribute of ["href", "xlink:href", "src"]) {
+        const value = icon.getAttribute(attribute) || "";
+        const tokens = value.toLowerCase().split(/[^a-z_]+/);
+        const action = tokens.find((token) => ACTIONS.has(token));
+        if (action) return { state: "work", actionType: `/action_types/${action}` };
+      }
+    }
+    // An empty cell is an observed blank, not evidence of being offline.
+    return { state: icons.length || text(cell) ? "unrecorded" : "none", actionType: null };
+  }
+
+  function playerForCell(cell, players) {
+    const native = cell.querySelector('[class*="CharacterName_characterName__"]') || cell;
+    const names = [];
+    function visit(node) {
+      if (node.nodeType === 3) {
+        const value = core.normalizeName(node.textContent);
+        if (value) names.push(value);
+        return;
+      }
+      if (node !== native && node.matches?.('svg, img, .mwi-git-invite-age, .mwi-git-guild-marker, [class*="Achievement"], [class*="achievement"]')) return;
+      for (const child of node.childNodes || []) visit(child);
+    }
+    visit(native);
+    const named = native.matches?.("[data-name]") ? native : native.querySelector("[data-name]");
+    const nativeName = named?.getAttribute("data-name") || native.querySelector('[class*="CharacterName_name__"]')?.textContent;
+    // The native name precedes decorative badge text. Never use substring or
+    // historical-alias matching to assign persistent observations.
+    const matches = players.filter((player) => core.normalizeName(player.currentName) === (core.normalizeName(nativeName) || names[0]));
+    return matches.length === 1 ? matches[0] : null;
+  }
+
+  function collect(data, observedAt = new Date().toISOString()) {
+    const readings = [];
+    for (const table of root.document.querySelectorAll("table")) {
+      if (!app.guildRosterDecorations.isGuildRosterTable(table) || !visible(table)) continue;
+      const headers = Array.from(table.tHead.rows[0].cells).map((cell) => text(cell).toLowerCase());
+      const activityIndex = headers.findIndex((value) => ["活动", "activity"].includes(value));
+      const presenceIndex = headers.findIndex((value) => ["状态", "status"].includes(value));
+      if (activityIndex < 0 || presenceIndex < 0) continue;
+      for (const body of table.tBodies) {
+        for (const row of body.rows) {
+          if (!app.guildRosterDecorations.isInvitedRow(row) || !visible(row)) continue;
+          if (!row.cells[activityIndex] || !row.cells[presenceIndex]) continue;
+          const player = playerForCell(row.cells[0], data.players || []);
+          if (!player) continue;
+          const state = PRESENCE.get(text(row.cells[presenceIndex]).toLowerCase());
+          if (!state) continue;
+          readings.push({ playerKey: player.playerKey, observedAt, activity: activity(row.cells[activityIndex]), presence: state });
+        }
+      }
+    }
+    return readings;
+  }
+
+  function signature(reading) {
+    return JSON.stringify([reading.activity.state, reading.activity.actionType, reading.presence]);
+  }
+
+  function observationFor(reading, data) {
+    const player = (data.players || []).find((entry) => entry.playerKey === reading.playerKey);
+    if (!player) return null;
+    const previous = core.dataIndex(data).observationLists.get(player.playerKey)?.find((event) => event.source === "guild_roster");
+    if (previous && signature(reading) === signature({
+      activity: { state: previous.activitySnapshot.state, actionType: previous.presenceSnapshot.actionType },
+      presence: previous.presenceSnapshot.state
+    })) return null;
+    return {
+      player: { ...player, lastSeenAt: reading.observedAt },
+      observation: {
+        id: core.uuid(), playerKey: player.playerKey, characterName: player.currentName,
+        viewedAt: reading.observedAt, source: "guild_roster", leaderboard: null,
+        guildSnapshot: { state: "unknown", guildId: null, guildName: null, guildRole: null, observedAt: reading.observedAt, certainty: "guild_roster" },
+        activitySnapshot: { state: reading.activity.state, observedAt: reading.observedAt, certainty: "guild_roster" },
+        presenceSnapshot: { state: reading.presence, actionType: reading.activity.actionType },
+        progressSnapshot: null
+      }
+    };
+  }
+
+  app.guildRosterObserver = Object.freeze({ collect, activity, playerForCell, signature, observationFor });
+})(globalThis);
+
 // ---- src/ui/import-export-dialog.js ----
 (function initImportExportDialog(root) {
   "use strict";
@@ -5704,6 +5875,12 @@
 
   function observationDetail(event, i18n) {
     const details = [];
+    if (event.source === "guild_roster") {
+      const action = event.presenceSnapshot?.actionType?.split("/").pop();
+      const actionLabel = action === "combat" ? i18n.t("rosterCombat") : i18n.category(action);
+      const activity = action ? actionLabel : i18n.t(event.activitySnapshot?.state === "none" ? "rosterActivityBlank" : "activityUnrecorded");
+      return `${i18n.t("rosterActivity")}：${activity} · ${i18n.t("rosterPresence")}：${i18n.t(`presence_${event.presenceSnapshot?.state || "unknown"}`)}`;
+    }
     if (event.leaderboard) {
       details.push([i18n.leaderboardType(event.leaderboard.typeHrid), i18n.category(event.leaderboard.categoryHrid)].filter(Boolean).join(" · "));
       details.push(`${i18n.t("rank")} ${event.leaderboard.rank ?? "—"}`);
@@ -5787,12 +5964,17 @@
     head.append(title, remove);
     const profileEvents = [...(index.observationLists.get(player.playerKey) || [])]
       .sort((a, b) => Date.parse(a.viewedAt || 0) - Date.parse(b.viewedAt || 0));
-    const observationsWithEvidence = profileEvents.map((event, index) => ({
-      ...event,
-      previousObservation: index > 0 ? profileEvents[index - 1] : null,
-      timelineType: "observation",
-      timelineAt: event.viewedAt
-    }));
+    let previousProfile = null;
+    const observationsWithEvidence = profileEvents.map((event) => {
+      const result = {
+        ...event,
+        previousObservation: event.source === "guild_roster" ? null : previousProfile,
+        timelineType: "observation",
+        timelineAt: event.viewedAt
+      };
+      if (event.source !== "guild_roster") previousProfile = event;
+      return result;
+    });
     const events = [
       ...observationsWithEvidence,
       ...(index.inviteLists.get(player.playerKey) || [])
@@ -5816,7 +5998,7 @@
       });
       const eventTitle = dom.element("div", { className: "mwi-git-event-title" });
       eventTitle.append(
-        dom.element("span", { text: invite ? i18n.t("inviteAttempt") : leaderboard ? i18n.t("leaderboardCaptured") : i18n.t("viewed") }),
+        dom.element("span", { text: invite ? i18n.t("inviteAttempt") : leaderboard ? i18n.t("leaderboardCaptured") : i18n.t(event.source === "guild_roster" ? "rosterObserved" : "viewed") }),
         dom.element("time", { className: "mwi-git-event-time", text: dom.formatDate(event.timelineAt, i18n.language) })
       );
       const changeEvidence = event.previousObservation
@@ -6541,6 +6723,8 @@
   let currentLeaderboard = null;
   let observer = null;
   let protocolChain = Promise.resolve();
+  let destroyed = false;
+  let rosterCapturePending = false;
   const importTargets = new WeakMap();
   const queuedActions = [];
   const DECORATION_REGIONS = ["leaderboard", "chat", "social", "roster"];
@@ -6557,7 +6741,13 @@
   let displayPreferences = preferenceStore.load();
 
   function openPlayerProfile(name) {
+    tracker.consume({ kind: "profile_target_selected", name, source: "unknown", at: new Date().toISOString() });
     return app.profileNavigation.open(name, app.bridge.requestProfile);
+  }
+
+  function captureProfileTarget(event) {
+    const target = app.chatDecorations.profileTargetFromEvent(event);
+    if (target) tracker.consume({ kind: "profile_target_selected", ...target, at: new Date().toISOString() });
   }
 
   function openProfileFromMarker(name) {
@@ -6574,8 +6764,38 @@
     );
     if (regions.has("chat")) app.chatDecorations.decorate(currentData, i18n, identity, displayPreferences.chat, openProfileFromMarker);
     if (regions.has("social")) app.socialDecorations.decorate(currentData, i18n, identity, displayPreferences.social, openProfileFromMarker);
-    if (regions.has("roster")) app.guildRosterDecorations.decorate(currentData, i18n);
+    if (regions.has("roster")) {
+      captureGuildRoster();
+      app.guildRosterDecorations.decorate(currentData, i18n);
+    }
   });
+
+  function captureGuildRoster() {
+    if (!namespace || destroyed || rosterCapturePending) return;
+    const readings = app.guildRosterObserver.collect(currentData);
+    if (!readings.some((reading) => app.guildRosterObserver.observationFor(reading, currentData))) return;
+    const targetNamespace = namespace;
+    let succeeded = false;
+    rosterCapturePending = true;
+    protocolChain = protocolChain.then(async () => {
+      if (destroyed || namespace !== targetNamespace) return;
+      for (const reading of readings) {
+        const record = app.guildRosterObserver.observationFor(reading, currentData);
+        if (!record) continue;
+        await repository.recordObservation(targetNamespace, record.player, record.observation);
+        dataDirty = true;
+      }
+      succeeded = true;
+    }).catch((error) => console.error("[MWI Guild Invite Tracker] Failed to observe guild roster", error))
+      .finally(async () => {
+        try {
+          if (!destroyed && dataDirty) await refresh();
+        } finally {
+          rosterCapturePending = false;
+          if (!destroyed && succeeded) requestDecorations(["roster"]);
+        }
+      });
+  }
 
   function requestDecorations(regions = DECORATION_REGIONS) {
     for (const region of regions) dirtyRegions.add(region);
@@ -6616,9 +6836,11 @@
   function scheduleMutations(mutations) {
     const visitedTables = new Set();
     for (const mutation of mutations) {
+      if (mutation.type === "attributes" && mutation.oldValue === mutation.target.getAttribute(mutation.attributeName)) continue;
       const changedNodes = [...mutation.addedNodes, ...mutation.removedNodes];
       if (changedNodes.length && changedNodes.every(ownDecorationNode)) continue;
-      markDecorationNode(mutation.target, visitedTables);
+      const visibilityChanged = mutation.type === "attributes" && ["hidden", "style", "class", "aria-hidden"].includes(mutation.attributeName);
+      markDecorationNode(mutation.target, visitedTables, visibilityChanged);
       for (const node of changedNodes) markDecorationNode(node, visitedTables, true);
     }
     requestDecorations([]);
@@ -6753,6 +6975,7 @@
   }
 
   root.addEventListener(app.config.bridgeEvent, handleBridge);
+  for (const type of ["click", "contextmenu", "keydown"]) root.addEventListener(type, captureProfileTarget, true);
   app.bridge.inject();
 
   function syncGameLanguage() {
@@ -6883,7 +7106,11 @@
     sidebar = app.sidebarIntegration.createController({ panel, i18n });
     sidebar.start();
     observer = new MutationObserver(scheduleMutations);
-    observer.observe(root.document.body, { childList: true, subtree: true });
+    observer.observe(root.document.body, {
+      childList: true, subtree: true, characterData: true, attributes: true,
+      attributeOldValue: true,
+      attributeFilter: ["src", "href", "xlink:href", "hidden", "style", "class", "aria-hidden"]
+    });
     requestDecorations();
   }
 
@@ -6910,10 +7137,12 @@
     get identity() { return identity; },
     get namespace() { return namespace; },
     async destroy() {
+      destroyed = true;
       root.clearInterval(expiryTimer);
       root.clearInterval(languageTimer);
       root.clearInterval(relativeTimeTimer);
       root.removeEventListener(app.config.bridgeEvent, handleBridge);
+      for (const type of ["click", "contextmenu", "keydown"]) root.removeEventListener(type, captureProfileTarget, true);
       root.removeEventListener("resize", resizeHandler);
       root.visualViewport?.removeEventListener?.("resize", resizeHandler);
       observer?.disconnect();
@@ -6925,6 +7154,7 @@
       app.guildRosterDecorations.clear();
       sidebar?.destroy();
       panel?.destroy();
+      await protocolChain;
       await repository.close();
     }
   });
