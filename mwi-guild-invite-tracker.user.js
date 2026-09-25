@@ -2,7 +2,7 @@
 // @name         银河奶牛公会邀请助手
 // @name:en      MWI Guild Invite Tracker
 // @namespace    https://github.com/LaYuDr/mwi-guild-invite-tracker
-// @version      0.5.28
+// @version      0.5.29
 // @updateURL    https://github.com/LaYuDr/mwi-guild-invite-tracker/releases/latest/download/mwi-guild-invite-tracker.user.js
 // @downloadURL  https://github.com/LaYuDr/mwi-guild-invite-tracker/releases/latest/download/mwi-guild-invite-tracker.user.js
 // @description  被动记录排行榜资料查看、公会状态和原生公会邀请结果
@@ -23,7 +23,7 @@
 
   app.config = Object.freeze({
     appId: "mwi-guild-invite-tracker",
-    version: "0.5.28",
+    version: "0.5.29",
     schemaVersion: 3,
     databaseName: "mwi-guild-invite-tracker",
     databaseVersion: 2,
@@ -3972,8 +3972,9 @@
     }
     [class*="ChatMessage_chatMessage__"] .mwi-git-chat-timestamp {
       display: inline-block;
-      inline-size: 10ch;
+      inline-size: auto;
       font-variant-numeric: tabular-nums;
+      font-kerning: none;
       white-space: nowrap;
     }
     .mwi-git-guild-marker--chat { --mwi-git-marker-size: 1.2em; }
