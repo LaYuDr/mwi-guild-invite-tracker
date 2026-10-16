@@ -2,7 +2,7 @@
 // @name         邀请助手
 // @name:en      Guild Invite Assistant
 // @namespace    https://github.com/LaYuDr/mwi-guild-invite-tracker
-// @version      0.6.3
+// @version      0.6.4
 // @updateURL    https://github.com/LaYuDr/mwi-guild-invite-tracker/releases/latest/download/mwi-guild-invite-tracker.user.js
 // @downloadURL  https://github.com/LaYuDr/mwi-guild-invite-tracker/releases/latest/download/mwi-guild-invite-tracker.user.js
 // @description  银河奶牛邀请助手：保存人物资料、公会状态和邀请结果，整理本地招募记录。
@@ -16,14 +16,14 @@
 // @grant        GM_removeValueChangeListener
 // @grant        GM_xmlhttpRequest
 // @connect      ukpyedhl.cn-hk1.rainapp.top
-// @antifeature  tracking Optional installation and daily activity counts; disabled by default.
+// @antifeature  tracking Installation and daily activity statistics; see the script's settings and privacy details.
 // @grant        GM_addElement
 // @license      MIT
 // ==/UserScript==
 
 
 // LAYU_USAGE_START mwi_invite
-/* Shared opt-in telemetry. Vendored into each plugin; never loads remote code. */
+/* Usage reporting policies are explicit per plugin; never loads remote code. */
 (function () {
   "use strict";
   const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -32,6 +32,8 @@
     pluginId,
     version,
     endpoint,
+    defaultEnabled = false,
+    reportOptOut = false,
     getValue,
     setValue,
     request,
@@ -53,7 +55,7 @@
     let settingsQueue = Promise.resolve();
     const day = () => new Date(now() + 8 * 3600000).toISOString().slice(0, 10);
     async function enabled() {
-      return !stopped && (await getValue(`${key}_consent`, false)) === true;
+      return !stopped && (await getValue(`${key}_consent`, defaultEnabled)) === true;
     }
     async function sendReport() {
       if (stopped || busy || now() < nextTry) return false;
@@ -61,8 +63,12 @@
       const ticket = generation;
       try {
         if (!(await enabled()) || (await getValue(`${key}_day`, "")) === day()) return false;
-        // Only the explicit enable action creates an identity. No background race to create UUIDs.
-        const id = await getValue(`${key}_id`, "");
+        // Default-on policies may create an ID, but must never overwrite saved opt-outs.
+        let id = await getValue(`${key}_id`, "");
+        if (!UUID.test(id) && defaultEnabled && ticket === generation && (await enabled())) {
+          await ensureIdentity();
+          id = await getValue(`${key}_id`, "");
+        }
         if (!UUID.test(id)) return false;
         const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${pluginId}\0${id}`));
         if (ticket !== generation || !(await enabled())) return false;
@@ -102,16 +108,37 @@
     function invalidate() {
       generation += 1;
     }
+    async function ensureIdentity() {
+      if (!UUID.test(await getValue(`${key}_id`, ""))) await setValue(`${key}_id`, crypto.randomUUID());
+      if (!UUID.test(await getValue(`${key}_id`, ""))) throw new Error("Identity was not saved");
+    }
+    async function sendOptOut() {
+      // One attempt per actual off transition; no identity, queue, retry or heartbeat accounting.
+      try {
+        await request({
+          method: "POST",
+          url: new URL("/v1/opt-out", url).href,
+          headers: { "Content-Type": "application/json" },
+          data: JSON.stringify({ plugin_id: pluginId, version }),
+          anonymous: true,
+          redirect: "error",
+          timeout: 10000
+        });
+      } catch (_) {
+        /* Disabling is saved locally even when the one-time event cannot be delivered. */
+      }
+    }
     function setEnabled(value) {
       invalidate();
       settingsQueue = settingsQueue
         .catch(() => {})
         .then(async () => {
+          const wasEnabled = await enabled();
           if (value === true) {
-            if (!UUID.test(await getValue(`${key}_id`, ""))) await setValue(`${key}_id`, crypto.randomUUID());
-            if (!UUID.test(await getValue(`${key}_id`, ""))) throw new Error("Identity was not saved");
+            await ensureIdentity();
           }
           await setValue(`${key}_consent`, value === true);
+          if (value !== true && wasEnabled && reportOptOut) void sendOptOut();
         });
       return settingsQueue;
     }
@@ -154,6 +181,7 @@
       listenerId = null;
     let commandBusy = false;
     const pending = new Set();
+    const optOutPending = new Set();
     const settings = new Map();
     const selector = `[data-layu-usage-settings="${config.pluginId}"]`;
     let settingsError = false;
@@ -166,13 +194,14 @@
       setValue: gm.setValue,
       request(details) {
         return new Promise((resolve, reject) => {
+          const requests = new URL(details.url).pathname === "/v1/opt-out" ? optOutPending : pending;
           let handle,
             finished = false;
           const complete = (error, response) => {
             if (finished) return;
             finished = true;
             env.clearTimeout(deadline);
-            pending.delete(cancel);
+            requests.delete(cancel);
             if (error) reject(new Error("Usage request failed"));
             else resolve(response);
           };
@@ -185,7 +214,7 @@
             }
           };
           const deadline = env.setTimeout(cancel, 12000);
-          pending.add(cancel);
+          requests.add(cancel);
           try {
             handle = gm.request({
               ...details,
@@ -212,35 +241,61 @@
       const zh = /^zh/i.test(host.getAttribute("lang") || env.navigator?.language || "zh");
       const words = zh
         ? {
-            title: "安装与活跃统计",
+            title: "使用量统计",
             off: "已关闭",
             on: "已开启",
             enable: "开启",
             disable: "关闭",
             cancel: "取消",
             confirm: "确认开启",
-            summary: "默认关闭。开启后统计安装数和每日活跃安装数，不统计游戏内操作；可随时关闭，不影响插件功能。",
-            more: "隐私与数据说明",
-            details: `开启时，仅向柆雨的统计服务（${new URL(config.endpoint).hostname}）发送插件标识、版本和随机安装标识的 SHA-256 摘要。标识仅保存在该脚本的 Tampermonkey 存储中，不使用硬件指纹，不发送账号、角色、聊天、资产、交易或 Cookie。摘要用于识别同一安装，不代表完全匿名；网络服务可见来源 IP。数据通过 HTTPS 发送，按北京时间每日去重，失败时可能重试。服务器暂存后同步到开发者电脑，历史及备份不设自动删除期限。安装数不等于设备数或人数。关闭后不再上报，已有历史保留。`,
-            question: "开启后将发送上述安装与活跃统计，是否继续？",
+            summary: "仅发送随机安装摘要、插件和版本，用于安装及日活统计。",
+            more: "数据范围",
+            details: `接收方：柆雨的雨云服务（${new URL(config.endpoint).hostname}）。每天最多一次，不传游戏数据或 Cookie。服务器暂存后同步到开发者电脑，历史永久保留；网络服务可见 IP。关闭只停止后续上报，不删除历史。`,
+            question: "确认向柆雨的统计服务发送这些数据？",
             failed: "设置未保存，请重试。",
             unavailable: "统计设置暂不可用。"
           }
         : {
-            title: "Installation and activity statistics",
+            title: "Usage statistics",
             off: "Off",
             on: "On",
             enable: "Enable",
             disable: "Turn off",
             cancel: "Cancel",
             confirm: "Confirm enable",
-            summary: "Off by default. Counts installations and daily active installations, not in-game actions. Turn off at any time without affecting plugin features.",
-            more: "Privacy and data details",
-            details: `While on, sends only the plugin ID, version and SHA-256 hash of a random installation ID to LaYu's statistics service (${new URL(config.endpoint).hostname}). The ID stays in this script's Tampermonkey storage. No hardware fingerprint, account, character, chat, asset, trade data or cookies are sent. The hash recognises the same installation, so this is not fully anonymous; the network service sees the source IP. Sent over HTTPS, deduplicated by Beijing calendar day; failures may be retried. Reports are transferred from the server to the developer's computer. History and backups have no automatic deletion deadline. Installation counts are not device or person counts. Turning off stops future reports; existing history remains.`,
-            question: "Enable the installation and activity reports described above?",
+            summary: "Sends a random installation hash, plugin ID and version to count installs and daily activity.",
+            more: "Data details",
+            details: `Recipient: LaYu's Rainyun service (${new URL(config.endpoint).hostname}). At most once daily; no game data or cookies. Reports are transferred to the developer's computer and retained indefinitely. The network service sees your IP. Turning off stops future reports; existing history remains.`,
+            question: "Send these data to LaYu’s statistics service?",
             failed: "Settings were not saved. Please retry.",
             unavailable: "Usage settings are unavailable."
           };
+      if (config.defaultEnabled) {
+        Object.assign(
+          words,
+          zh
+            ? {
+                title: "安装与活跃统计",
+                summary: "默认开启，可随时关闭，不影响插件功能。统计安装数和每日活跃安装数，不统计游戏内操作。",
+                more: "隐私与数据说明",
+                details: `开启时，仅向柆雨的统计服务（${new URL(config.endpoint).hostname}）发送插件标识、版本和随机安装标识的 SHA-256 摘要。标识仅保存在该脚本的 Tampermonkey 存储中，不使用硬件指纹，不发送账号、角色、聊天、资产、交易或 Cookie。摘要用于识别同一安装，不代表完全匿名；网络服务可见来源 IP。数据通过 HTTPS 发送，按北京时间每日去重，失败时可能重试。服务器暂存后同步到开发者电脑，历史及备份不设自动删除期限。安装数不等于设备数或人数。`,
+                question: "开启后将发送上述安装与活跃统计，是否继续？"
+              }
+            : {
+                title: "Installation and activity statistics",
+                summary:
+                  "On by default. Turn off at any time without affecting plugin features. Counts installations and daily active installations, not in-game actions.",
+                more: "Privacy and data details",
+                details: `While on, sends only the plugin ID, version and SHA-256 hash of a random installation ID to LaYu's statistics service (${new URL(config.endpoint).hostname}). The ID stays in this script's Tampermonkey storage. No hardware fingerprint, account, character, chat, asset, trade data or cookies are sent. The hash recognises the same installation, so this is not fully anonymous; the network service sees the source IP. Sent over HTTPS, deduplicated by Beijing calendar day; failures may be retried. Reports are transferred from the server to the developer's computer. History and backups have no automatic deletion deadline. Installation counts are not device or person counts.`,
+                question: "Enable the installation and activity reports described above?"
+              }
+        );
+      }
+      if (config.reportOptOut) {
+        words.summary += zh
+          ? "关闭时仍会尝试发送一次仅含插件标识和版本的关闭事件，失败不重试，之后不再上报；已有历史保留。"
+          : " Turning off still attempts one opt-out report containing only the plugin ID and version, with no retry or further reports. Existing history remains.";
+      }
       const root = host.shadowRoot || host.attachShadow({ mode: "open" });
       root.innerHTML = `<style>
         :host { display:block; margin-block:12px; color:inherit; font:inherit; min-width:0; }
@@ -318,6 +373,7 @@
         }
         if (action === "toggle" && !active) {
           binding.pending = !binding.pending;
+          if (binding.pending) root.querySelector("details").open = true;
           settingsError = false;
           update();
           if (binding.pending) confirm.focus();
@@ -360,7 +416,7 @@
     function update() {
       if (disposed) return;
       try {
-        const on = gm.getValue(`${client.key}_consent`, false) === true;
+        const on = gm.getValue(`${client.key}_consent`, config.defaultEnabled === true) === true;
         for (const binding of settings.values()) binding.render(on);
         if (timer !== null) {
           env.clearInterval(timer);
@@ -388,6 +444,7 @@
     function pagehide(event) {
       suspended = true;
       cancelPending();
+      for (const cancel of [...optOutPending]) cancel();
       if (timer !== null) {
         env.clearInterval(timer);
         timer = null;
@@ -406,6 +463,7 @@
       disposed = true;
       client.stop();
       cancelPending();
+      for (const cancel of [...optOutPending]) cancel();
       if (timer !== null) env.clearInterval(timer);
       observer?.disconnect();
       for (const binding of settings.values()) binding.dispose();
@@ -445,7 +503,7 @@
     return { dispose, report, client };
   }
   if (typeof module !== "undefined" && module.exports) module.exports = { createUsageClient, boot };
-  try { boot({"pluginId":"mwi_invite","name":"邀请助手","version":"0.6.3","endpoint":"https://ukpyedhl.cn-hk1.rainapp.top","development":false}, {getValue: typeof GM_getValue === "function" ? GM_getValue : null,
+  try { boot({"pluginId":"mwi_invite","name":"邀请助手","version":"0.6.4","endpoint":"https://ukpyedhl.cn-hk1.rainapp.top","development":false,"defaultEnabled":true,"reportOptOut":true}, {getValue: typeof GM_getValue === "function" ? GM_getValue : null,
 setValue: typeof GM_setValue === "function" ? GM_setValue : null,
 listen: typeof GM_addValueChangeListener === "function" ? GM_addValueChangeListener : null,
 unlisten: typeof GM_removeValueChangeListener === "function" ? GM_removeValueChangeListener : null,
